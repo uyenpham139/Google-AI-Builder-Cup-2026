@@ -1,0 +1,20 @@
+{
+  "name": "echo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:frontend": "pnpm --filter frontend dev",
+    "build:frontend": "pnpm --filter frontend build",
+    "prepare": "husky"
+  },
+  "packageManager": "pnpm@10.33.2",
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.5.1"
+  },
+  "lint-staged": {
+    "frontend/**/*.{js,jsx,ts,tsx}": [
+      "pnpm --filter frontend exec eslint --fix"
+    ]
+  }
+}
