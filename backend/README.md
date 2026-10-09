@@ -67,4 +67,29 @@ backend/
 
 ## Audio Streaming Endpoint
 
-The backend exposes a WebSocket endpoint at `ws://localhost:8000/ws/audio`. The frontend connects to this endpoint to stream microphone chunks.
+`ws://localhost:8000/ws/audio` ingests live call audio. Audio lives only in RAM: nothing is written to disk.
+
+1. **Handshake first.** The first text frame must be `INIT_SESSION`:
+   `{"type":"INIT_SESSION","sessionId":"<id>","timestamp":<ms>,"audioConfig":{"encoding":"LINEAR16","sampleRate":16000,"channels":1,"chunkDurationMs":100}}`.
+   `sessionId` is 1 to 128 characters of `A-Z a-z 0-9 _ -`. A client that reconnects with the same `sessionId` replaces its old session.
+2. **Audio as binary frames.** Raw 16-bit little-endian PCM, 16 kHz, mono. One 100 ms chunk is 3200 bytes. No Base64. Empty or odd-length frames are dropped.
+3. **Stop.** `{"type":"STOP_STREAM","sessionId":"<id>","reason":"USER_STOPPED"}` ends the session and the server closes with 1000. A plain disconnect also ends it.
+4. **No acknowledgements.** The server sends nothing per chunk.
+
+| Close code | Meaning |
+|---|---|
+| 1000 | Normal end (`STOP_STREAM`) |
+| 1008 | Protocol violation: audio before `INIT_SESSION`, invalid or repeated `INIT_SESSION` |
+| 1009 | A binary frame larger than 64 KB |
+| 1013 | Server busy (100 concurrent sessions) |
+
+A socket that sends no `INIT_SESSION` within 10 s is closed with 1008. A newer connection with the same `sessionId` replaces the old one, and the old socket is closed with 1008.
+
+Each session keeps a 5 s (160,000 byte) ring buffer that overwrites the oldest audio. `AudioSessionContext.get_latest_window(3000)` returns the newest 3 s (96,000 bytes), and `vertex_ai_stream_generator()` yields chunks for the Live API bridge. The code is in `app/services/ingestion/`.
+
+### Tests
+
+```bash
+cd backend
+python -m pytest tests -q
+```
