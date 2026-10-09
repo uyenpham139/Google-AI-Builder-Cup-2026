@@ -68,3 +68,11 @@ backend/
 ## Audio Streaming Endpoint
 
 The backend exposes a WebSocket endpoint at `ws://localhost:8000/ws/audio`. The frontend connects to this endpoint to stream microphone chunks.
+
+### Protocol
+
+- Binary frames: raw 16 kHz mono 16-bit little-endian PCM. Each is forwarded to the Gemini Live API and acknowledged with `{"status":"received","bytes":N,"forwarded":bool}`. `forwarded: false` means the chunk was dropped (reconnecting, empty or odd-length).
+- Send the text frame `{"type":"STOP_STREAM"}` to end the session. The server closes with code `1000`. A plain disconnect is handled the same way.
+- Close code `1011` means the Live session could not start or could not be recovered.
+- Environment: `GEMINI_API_KEY` (required), `GEMINI_LIVE_MODEL` (default `gemini-3.8-live`), `GEMINI_LIVE_VOICE` (default `Puck`).
+- Real-API check: `python scripts/live_smoke_test.py [seconds]` (use `600` for the 10-minute soak).
