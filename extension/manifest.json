@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ECHO In-Meeting Defense Extension",
+  "version": "1.0.0",
+  "description": "Shows live ECHO Sentry monitoring status on Google Meet.",
+  "permissions": ["tabCapture", "activeTab"],
+  "action": { "default_title": "Start ECHO monitoring on this tab" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["src/hud.js", "src/meet.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
