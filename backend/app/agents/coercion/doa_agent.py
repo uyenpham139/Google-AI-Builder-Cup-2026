@@ -1,3 +1,4 @@
+import os
 import time
 from google import genai
 from google.genai import types
@@ -89,7 +90,7 @@ class DoAComplianceAgent:
         start_time = time.time()
         
         response = self.client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash'),
             contents=user_prompt,
             config=types.GenerateContentConfig(
                 tools=[verify_treasury_policy],
