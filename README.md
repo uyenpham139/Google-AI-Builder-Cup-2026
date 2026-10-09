@@ -57,7 +57,9 @@ docker-compose up --build
 
 ## Features In Development
 
-- **Audio Streaming Spike**: A proof-of-concept for capturing microphone input via the Web Audio API and streaming chunks via WebSocket to the FastAPI backend, which will then interface with the Gemini Live API.
+- **Audio capture and ingestion (Feature 1)**: `/spike` in the frontend captures tab audio (Web Audio API + AudioWorklet), downsamples it to 16 kHz mono PCM in 100 ms chunks and streams it over a binary WebSocket to `/ws/audio` (see `backend/README.md` for the protocol). The Chrome extension in `extension/` shows an ECHO Sentry HUD with a live waveform on Google Meet (see `extension/README.md`).
+
+Run the tests with `pnpm --filter frontend test` (frontend and extension) and `cd backend && python -m pytest tests -q`.
 
 ## License
 See the [LICENSE](LICENSE) file for more details.
