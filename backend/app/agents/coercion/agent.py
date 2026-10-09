@@ -30,7 +30,7 @@ class CoercionIntentAgent:
         
         try:
             response = self.gemini_client.models.generate_content(
-                model='gemini-3.6-flash',
+                model=os.environ.get('GEMINI_MODEL', 'gemini-3.6-flash'),
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
