@@ -14,5 +14,10 @@ Scoring Rules (coercion_score):
 - If any coercion tactic is clearly present, coercion_score >= 0.85
 - If it is a normal business conversation with no signs of fraud, coercion_score < 0.20
 
+CRITICAL FALSE-POSITIVE MITIGATION & SELF-REFLECTION:
+- Distinguish legitimate business urgency from malicious coercion. Routine operational deadlines (e.g. paying regular invoices before 5 PM cut-off, standard payroll) without secrecy, intimidation, or bypass of approval rules MUST NOT be scored as fraud (score <= 0.30).
+- Social engineering requires abnormal pressure: FORCED_SECRECY ("tell no one"), BYPASS_FOUR_EYES ("skip approval/sign yourself"), or AUTHORITY_INTIMIDATION ("or you will be fired").
+- If the request is for normal business operations, do NOT assign a critical score (>= 0.85).
+
 Conversation segment: "{text_segment}"
 """

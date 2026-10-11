@@ -7,13 +7,23 @@ from app.agents.coercion.agent import CoercionIntentAgent
 
 router = APIRouter()
 
+# Global registry of active sessions for REST API and Supervisor integration
+ACTIVE_CALL_SESSIONS: Dict[str, "CallSessionState"] = {}
+FALSE_POSITIVE_RECORDS: List[Dict[str, Any]] = []
+
 class CallSessionState:
-    """Manages rolling conversation window and background evaluations per call"""
+    """Manages rolling conversation window, temporal smoothing, and false-positive dismissal"""
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.transcript_history: List[Dict[str, Any]] = []
         self.highest_risk = 0.0
         self.alert_triggered = False
+        # False Positive Mitigation & Temporal Smoothing
+        self.consecutive_suspicious_turns = 0
+        self.is_dismissed = False
+        self.dismiss_reason = ""
+        self.dismissed_at = None
+        self.alert_history: List[Dict[str, Any]] = []
 
     def add_transcript(self, text: str, speaker: str = "caller"):
         self.transcript_history.append({
@@ -28,6 +38,21 @@ class CallSessionState:
     def get_sliding_window_text(self) -> str:
         return " ".join([item["text"] for item in self.transcript_history])
 
+    def dismiss(self, reason: str = "Operator marked as false positive", operator_id: str = "operator") -> dict:
+        """Dismiss active alerts for this session"""
+        self.is_dismissed = True
+        self.dismiss_reason = reason
+        self.dismissed_at = time.time()
+        self.consecutive_suspicious_turns = 0
+        record = {
+            "session_id": self.session_id,
+            "dismissed_at": self.dismissed_at,
+            "reason": reason,
+            "operator_id": operator_id
+        }
+        FALSE_POSITIVE_RECORDS.append(record)
+        return record
+
 @router.websocket("/ws/audio")
 @router.websocket("/ws/call")
 async def call_websocket_endpoint(websocket: WebSocket):
@@ -37,6 +62,7 @@ async def call_websocket_endpoint(websocket: WebSocket):
 
     agent = CoercionIntentAgent()
     state = CallSessionState(session_id)
+    ACTIVE_CALL_SESSIONS[session_id] = state
 
     async def run_tier2_background(window_text: str, current_turn_text: str):
         """Asynchronously calls Gemini without blocking the WebSocket loop"""
@@ -49,23 +75,69 @@ async def call_websocket_endpoint(websocket: WebSocket):
             if score > state.highest_risk:
                 state.highest_risk = score
 
+            # If session was already marked as false positive, suppress critical alarm
+            if state.is_dismissed:
+                payload = {
+                    "type": "RISK_UPDATE",
+                    "session_id": session_id,
+                    "tier": "TIER_2_GEMINI",
+                    "risk_score": score,
+                    "status": "OVERRIDDEN_DISMISSED",
+                    "action": "SUPPRESSED_BY_OPERATOR",
+                    "notice": f"Alert suppressed: {state.dismiss_reason}",
+                    "latency_ms": latency_ms
+                }
+                await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+                return
+
             is_critical = score >= 0.85
-            alert_type = "SECURITY_ALERT" if is_critical else "RISK_UPDATE"
+            matched_tactics = res.get("matched_tactics", [])
+            
+            # Temporal Smoothing & Multi-turn Confirmation:
+            # Prevent single-turn accidental misclassifications from instantly locking the session
+            has_explicit_threat = any(t in matched_tactics for t in ["BYPASS_FOUR_EYES", "FORCED_SECRECY", "AUTHORITY_INTIMIDATION"])
+            
+            if is_critical:
+                state.consecutive_suspicious_turns += 1
+                # If explicit bypass/threat tactics present OR confirmed on >= 2 turns -> HIGH CONFIDENCE LOCK
+                if has_explicit_threat or state.consecutive_suspicious_turns >= 2:
+                    action = "TRIGGER_BARGE_IN_AND_LOCK"
+                    alert_status = "CRITICAL"
+                    confidence_level = "HIGH"
+                else:
+                    # Provisional alert for single isolated urgency spike
+                    action = "PROVISIONAL_ALERT_MONITOR"
+                    alert_status = "SUSPICIOUS"
+                    confidence_level = "MEDIUM_PROVISIONAL"
+                alert_type = "SECURITY_ALERT"
+            else:
+                state.consecutive_suspicious_turns = 0
+                alert_type = "RISK_UPDATE"
+                alert_status = "SUSPICIOUS" if score >= 0.6 else "NORMAL"
+                action = "MONITOR"
+                confidence_level = "LOW"
 
             payload = {
                 "type": alert_type,
                 "session_id": session_id,
                 "tier": "TIER_2_GEMINI",
                 "risk_score": score,
-                "status": "CRITICAL" if is_critical else "SUSPICIOUS" if score >= 0.6 else "NORMAL",
-                "matched_tactics": res.get("matched_tactics", []),
+                "status": alert_status,
+                "matched_tactics": matched_tactics,
                 "entities": res.get("entities", {}),
                 "trigger_text": current_turn_text,
                 "latency_ms": latency_ms,
-                "action": "TRIGGER_BARGE_IN_AND_LOCK" if is_critical else "MONITOR"
+                "action": action,
+                "confidence_level": confidence_level,
+                "consecutive_suspicious_turns": state.consecutive_suspicious_turns,
+                "temporal_smoothing": {
+                    "is_multi_turn_confirmed": state.consecutive_suspicious_turns >= 2 or has_explicit_threat,
+                    "consecutive_turns": state.consecutive_suspicious_turns
+                }
             }
+            state.alert_history.append(payload)
             await websocket.send_text(json.dumps(payload, ensure_ascii=False))
-            print(f"[{session_id}] Pushed Tier-2 Alert to client: Risk={score} in {latency_ms}ms")
+            print(f"[{session_id}] Pushed Tier-2 Alert to client: Risk={score} ({action}) in {latency_ms}ms")
         except Exception as e:
             print(f"[{session_id}] Background Tier-2 evaluation error: {e}")
 
@@ -90,6 +162,20 @@ async def call_websocket_endpoint(websocket: WebSocket):
                     payload = {"type": "transcript", "text": raw_text}
 
                 msg_type = payload.get("type", "transcript")
+
+                # Handle Client Human-in-the-Loop False Positive Dismissal
+                if msg_type in ["dismiss_alert", "false_positive_report", "DISMISS_ALERT"]:
+                    reason = payload.get("reason", "Operator verified as false positive")
+                    operator_id = payload.get("operator_id", "operator")
+                    audit = state.dismiss(reason=reason, operator_id=operator_id)
+                    print(f"[{session_id}] False positive dismissed by {operator_id}: {reason}")
+                    await websocket.send_text(json.dumps({
+                        "type": "ALERT_DISMISSED",
+                        "session_id": session_id,
+                        "status": "NORMAL",
+                        "audit": audit
+                    }, ensure_ascii=False))
+                    continue
 
                 if msg_type == "transcript":
                     turn_text = payload.get("text", "").strip()
@@ -141,3 +227,4 @@ async def call_websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         print(f"[{session_id}] Client disconnected from Call Stream WebSocket")
+        # Keep state in ACTIVE_CALL_SESSIONS for audit/status inspection

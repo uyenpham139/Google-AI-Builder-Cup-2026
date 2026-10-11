@@ -12,13 +12,43 @@ class SupervisorAgent:
         self.broadcast_handler = broadcast_handler
         # State Latching & Debounce per session
         self.enforced_sessions = set()
+        # Session dismissal & False Positive feedback tracking
+        self.dismissed_sessions = {}
+        self.session_evaluations = {}
+
+    def dismiss_session(self, session_id: str, reason: str = "False positive dismissed by operator", operator_id: str = "operator") -> dict:
+        """
+        Unlocks a latched session and records false positive feedback (Human-in-the-Loop).
+        """
+        was_enforced = session_id in self.enforced_sessions
+        if was_enforced:
+            self.enforced_sessions.remove(session_id)
+            
+        record = {
+            "session_id": session_id,
+            "dismissed_at": time.time(),
+            "reason": reason,
+            "operator_id": operator_id,
+            "previous_enforced": was_enforced
+        }
+        self.dismissed_sessions[session_id] = record
+        return {
+            "success": True,
+            "session_id": session_id,
+            "status": "DISMISSED",
+            "audit_record": record
+        }
 
     async def evaluate_meeting_step(self, session_id: str, pcm_bytes: bytes, transcript_text: str, erp_context: dict) -> dict:
         """
         Orchestrates parallel execution of Acoustic, Coercion, and DoA evaluation.
         Calculates a dynamic risk score and enforces actions if the score exceeds the safe threshold.
+        Includes contextual cross-validation to mitigate False Positives.
         """
         start_time = time.time()
+        
+        # If session has already been dismissed by an operator, suppress repeated enforcement
+        is_previously_dismissed = session_id in self.dismissed_sessions
         
         # FR-1: Parallel Analyze
         # acoustic_agent.evaluate_pcm_artifacts is async
@@ -92,19 +122,55 @@ class SupervisorAgent:
         # RiskScore = 0.45 * AcousticScore + 0.35 * CoercionScore + 0.20 * DoAViolationScore
         total_risk = round(0.45 * a_score + 0.35 * c_score + 0.20 * d_score, 3)
         
-        # Fast-Fail Risk Elevation: Ensure the meeting gets blocked if any single factor is critical
-        if a_score >= 0.90 or c_score >= 0.90 or d_score >= 0.90:
+        # False Positive Mitigation & Contextual Cross-Validation:
+        # Isolated single-agent spikes without corroboration are subject to attenuation:
+        # - If Coercion is high but Acoustic voice is natural (<0.3) AND DoA is whitelisted/compliant (==0.0),
+        #   it may be legitimate operational urgency (False Positive candidate).
+        # - If Acoustic has an isolated spike but Coercion (<0.2) and DoA (==0.0) are completely clean,
+        #   it may be telecommunication codec packet loss or mic noise.
+        is_isolated_coercion = (c_score >= 0.90 and a_score < 0.30 and d_score == 0.0)
+        is_isolated_acoustic = (a_score >= 0.90 and c_score < 0.20 and d_score == 0.0)
+        
+        mitigation_applied = False
+        mitigation_reason = None
+        
+        if is_isolated_coercion:
+            mitigation_applied = True
+            mitigation_reason = "Isolated urgency detected: Whitelisted beneficiary and natural voice suggest legitimate operational business request. Scaled to WARNING."
+            total_risk = 0.65
+        elif is_isolated_acoustic:
+            mitigation_applied = True
+            mitigation_reason = "Isolated acoustic anomaly: Zero coercion signals and compliant DoA suggest network/codec noise. Scaled to WARNING."
+            total_risk = 0.65
+        elif a_score >= 0.90 or c_score >= 0.90 or d_score >= 0.90:
+            # Genuine Multi-factor or severe DoA breach Fast-Fail:
             total_risk = max(total_risk, 0.95)
+
+        # If manually dismissed by operator previously, downgrade status
+        if is_previously_dismissed:
+            decision_status = "OVERRIDDEN_DISMISSED"
+        elif total_risk < 0.6:
+            decision_status = "NORMAL"
+        elif total_risk <= 0.85:
+            decision_status = "WARNING"
+        else:
+            decision_status = "CRITICAL"
 
         decision = {
             "session_id": session_id,
             "risk_score": total_risk,
             "breakdown": {"acoustic": a_score, "coercion": c_score, "doa": d_score},
-            "status": "NORMAL" if total_risk < 0.6 else "WARNING" if total_risk <= 0.85 else "CRITICAL"
+            "status": decision_status,
+            "false_positive_mitigation": {
+                "applied": mitigation_applied,
+                "reason": mitigation_reason,
+                "is_previously_dismissed": is_previously_dismissed
+            }
         }
 
         # FR-3 & FR-4: Barge-in Trigger Dispatcher & State Latching
-        if total_risk > 0.85 and session_id not in self.enforced_sessions:
+        # Only enforce if not previously dismissed and not already enforced
+        if total_risk > 0.85 and session_id not in self.enforced_sessions and not is_previously_dismissed:
             self.enforced_sessions.add(session_id)
             reason = f"Voice Clone ({int(a_score*100)}%), Coercion ({int(c_score*100)}%), DoA Breach ({int(d_score*100)}%)"
             
@@ -123,5 +189,6 @@ class SupervisorAgent:
 
         end_time = time.time()
         decision["latency_ms"] = round((end_time - start_time) * 1000, 2)
+        self.session_evaluations[session_id] = decision
         
         return decision

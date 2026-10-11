@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.websockets import audio
+from app.api import alerts
 
 app = FastAPI(title="Echo API - Multi Agent System")
 
@@ -19,3 +20,4 @@ def read_root():
 
 # Include routers
 app.include_router(audio.router)
+app.include_router(alerts.router)
