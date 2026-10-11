@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 from app.agents.coercion.agent import CoercionIntentAgent
 
 @pytest.fixture
@@ -39,7 +39,7 @@ async def test_integration_gemini_accuracy(mock_agent):
             }
         }
         mock_response_obj.text = json.dumps(mock_json_content)
-        mock_agent.gemini_client.models.generate_content.return_value = mock_response_obj
+        mock_agent.gemini_client.aio.models.generate_content = AsyncMock(return_value=mock_response_obj)
         
         result = await mock_agent.evaluate_intent(text)
         

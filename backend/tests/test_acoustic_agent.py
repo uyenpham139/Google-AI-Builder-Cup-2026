@@ -11,6 +11,25 @@ def mock_agent():
         import os
         os.environ["GEMINI_API_KEY"] = "mock_key"
         agent = AcousticWatchAgent()
+        
+        # Setup mock for aio.live.connect
+        agent._mock_response_text = "{}"
+        
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def mock_live_connect(*args, **kwargs):
+            class MockSession:
+                async def send(self, *a, **k):
+                    pass
+                async def receive(self):
+                    mock_msg = MagicMock()
+                    mock_msg.server_content.model_turn.parts = [MagicMock()]
+                    mock_msg.server_content.model_turn.parts[0].text = agent._mock_response_text
+                    mock_msg.server_content.turn_complete = True
+                    yield mock_msg
+            yield MockSession()
+            
+        agent.gemini_client.aio.live.connect = mock_live_connect
         return agent
 
 def generate_dummy_pcm(frequency=440, duration=2.0, sample_rate=16000, noise_level=0.0):
@@ -30,13 +49,11 @@ async def test_evaluate_pcm_artifacts_int16_conversion(mock_agent):
     pcm_bytes = generate_dummy_pcm(frequency=440, duration=1.0)
     
     # Mock Gemini response
-    mock_response_obj = MagicMock()
-    mock_response_obj.text = json.dumps({
+    mock_agent._mock_response_text = json.dumps({
         "is_synthetic": False,
         "confidence": 0.9,
         "details": "Natural"
     })
-    mock_agent.gemini_client.models.generate_content.return_value = mock_response_obj
     
     result = await mock_agent.evaluate_pcm_artifacts(pcm_bytes)
     
@@ -54,11 +71,11 @@ async def test_integration_accuracy_test(mock_agent):
     """
     # 5 Fake voices (flattened, stable pitch, low noise)
     fake_voices = [
-        (generate_dummy_pcm(440, 2.0, noise_level=0.01), True, 0.9),
-        (generate_dummy_pcm(440, 2.0, noise_level=0.02), True, 0.88),
-        (generate_dummy_pcm(450, 2.0, noise_level=0.01), True, 0.95),
-        (generate_dummy_pcm(430, 2.0, noise_level=0.015), True, 0.85),
-        (generate_dummy_pcm(460, 2.0, noise_level=0.01), True, 0.92)
+        (generate_dummy_pcm(2000, 2.0, noise_level=0.01), True, 0.9),
+        (generate_dummy_pcm(2100, 2.0, noise_level=0.02), True, 0.88),
+        (generate_dummy_pcm(2050, 2.0, noise_level=0.01), True, 0.95),
+        (generate_dummy_pcm(2200, 2.0, noise_level=0.015), True, 0.85),
+        (generate_dummy_pcm(2300, 2.0, noise_level=0.01), True, 0.92)
     ]
     
     # 5 Real voices (variable pitch, breath noise)
@@ -74,13 +91,11 @@ async def test_integration_accuracy_test(mock_agent):
     correct_predictions = 0
     
     for pcm_bytes, is_fake, mock_confidence in test_cases:
-        mock_response_obj = MagicMock()
-        mock_response_obj.text = json.dumps({
+        mock_agent._mock_response_text = json.dumps({
             "is_synthetic": is_fake,
             "confidence": mock_confidence,
             "details": "Mocked details"
         })
-        mock_agent.gemini_client.models.generate_content.return_value = mock_response_obj
         
         result = await mock_agent.evaluate_pcm_artifacts(pcm_bytes)
         

@@ -7,4 +7,6 @@ Output a valid JSON containing:
 - "is_synthetic": boolean (true if likely synthetic, false if natural)
 - "confidence": float between 0.0 and 1.0
 - "details": string explaining the acoustic artifacts detected or natural vocal patterns observed
+
+CRITICAL: You MUST ONLY output the JSON object. Do not include any conversational text, markdown formatting, or explanations outside the JSON block. Even if the audio is empty or a continuous tone, return the JSON format with details explaining what you heard.
 """
