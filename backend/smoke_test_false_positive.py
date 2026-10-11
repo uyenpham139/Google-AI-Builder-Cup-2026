@@ -62,7 +62,6 @@ def generate_synthetic_voice_dummy(duration=1.5, sample_rate=16000):
     return audio.astype(np.int16).tobytes()
 
 async def run_smoke_test():
-    global barge_in_triggered_count, erp_lock_triggered_count
     print("=" * 84)
     print("  ECHO-33: FALSE POSITIVE MITIGATION & OPERATOR OVERRIDE SMOKE TEST")
     print("=" * 84)
