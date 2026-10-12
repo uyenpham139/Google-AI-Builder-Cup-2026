@@ -3,7 +3,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from google import genai
@@ -37,12 +37,16 @@ class GeminiLiveClient:
         backoff: tuple[float, ...] = (0.2, 0.5, 1.0),
         stable_after_s: float = 5.0,
         max_quick_failures: int = 3,
+        system_instruction: str | None = None,
+        on_audio: Callable[[bytes], Awaitable[None]] | None = None,
     ):
         self._settings = settings or LiveSettings.from_env()
         self._connect_fn = connect_fn or self._sdk_connect
         self._backoff = backoff
         self._stable_after_s = stable_after_s
         self._max_quick_failures = max_quick_failures
+        self._system_instruction = system_instruction
+        self._on_audio = on_audio
         self._quick_failures = 0
         self._opened_at = 0.0
         self._sdk_client: genai.Client | None = None
@@ -70,6 +74,7 @@ class GeminiLiveClient:
     def _build_config(self) -> types.LiveConnectConfig:
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
+            system_instruction=self._system_instruction,
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)
@@ -135,6 +140,21 @@ class GeminiLiveClient:
             return False
         return True
 
+    async def send_text_turn(self, text: str) -> bool:
+        """Inject a complete user text turn (used for the hidden barge-in trigger)."""
+        session = self._session
+        if session is None or not self._connected.is_set():
+            return False
+        try:
+            await session.send_client_content(
+                turns=types.Content(role="user", parts=[types.Part(text=text)]),
+                turn_complete=True,
+            )
+        except Exception as exc:
+            logger.warning("Failed to send text turn: %s", exc)
+            return False
+        return True
+
     async def disconnect(self) -> None:
         self._closing = True
         receiver, self._receiver = self._receiver, None
@@ -151,15 +171,34 @@ class GeminiLiveClient:
         if getattr(message, "go_away", None) is not None:
             raise _ReconnectRequested(f"GoAway, time left: {message.go_away.time_left}")
 
+    async def _forward_audio(self, message: Any) -> None:
+        """Hand model audio (PCM 24 kHz) to `on_audio`; a failing callback never ends the stream."""
+        if self._on_audio is None:
+            return
+        content = getattr(message, "server_content", None)
+        turn = getattr(content, "model_turn", None)
+        for part in getattr(turn, "parts", None) or []:
+            blob = getattr(part, "inline_data", None)
+            if blob is None or not str(getattr(blob, "mime_type", "")).startswith("audio/pcm"):
+                continue
+            pcm = bytes(blob.data or b"")
+            pcm = pcm[: len(pcm) - len(pcm) % 2]  # never hand over half a sample
+            if not pcm:
+                continue
+            try:
+                await self._on_audio(pcm)
+            except Exception as exc:
+                logger.warning("Downlink callback failed: %s", exc)
+
     async def _receive_loop(self) -> None:
-        # Downlink audio is out of scope (Task 3.3): messages are drained and discarded
-        # so nothing accumulates, but resumption handles and GoAway are honoured.
+        # Resumption handles and GoAway are honoured; model audio goes to `on_audio` (ECHO-24).
         while not self._closing:
             try:
                 seen = 0
                 async for message in self._session.receive():
                     seen += 1
                     self._track(message)
+                    await self._forward_audio(message)
                 if seen == 0:
                     raise GeminiLiveError("Live stream ended without messages")
             except asyncio.CancelledError:
