@@ -10,6 +10,7 @@ class FakeSession:
 
     def __init__(self):
         self.sent = []
+        self.turns = []
         self.closed = False
         self.inbox = asyncio.Queue()
 
@@ -17,6 +18,11 @@ class FakeSession:
         if self.closed:
             raise ConnectionError("session closed")
         self.sent.append(kwargs)
+
+    async def send_client_content(self, **kwargs):
+        if self.closed:
+            raise ConnectionError("session closed")
+        self.turns.append(kwargs)
 
     async def receive(self):
         # Mirrors the SDK: yields messages until a turn ends. Push None to end a turn.
@@ -75,6 +81,15 @@ def go_away():
         session_resumption_update=None,
         go_away=SimpleNamespace(time_left="5s"),
         server_content=None,
+    )
+
+
+def audio_message(data, mime_type="audio/pcm;rate=24000"):
+    part = SimpleNamespace(inline_data=SimpleNamespace(data=data, mime_type=mime_type), text=None)
+    return SimpleNamespace(
+        session_resumption_update=None,
+        go_away=None,
+        server_content=SimpleNamespace(model_turn=SimpleNamespace(parts=[part])),
     )
 
 

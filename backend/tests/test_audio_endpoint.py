@@ -13,7 +13,9 @@ class FakeClient:
     instances = []
     connect_error = None
 
-    def __init__(self):
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.turns = []
         self.sent = []
         self.disconnected = 0
         self.failed = False
@@ -25,6 +27,10 @@ class FakeClient:
 
     async def send_audio(self, chunk):
         self.sent.append(chunk)
+        return True
+
+    async def send_text_turn(self, text):
+        self.turns.append(text)
         return True
 
     async def disconnect(self):
