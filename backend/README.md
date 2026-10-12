@@ -76,3 +76,12 @@ The backend exposes a WebSocket endpoint at `ws://localhost:8000/ws/audio`. The 
 - Close code `1011` means the Live session could not start or could not be recovered.
 - Environment: `GEMINI_API_KEY` (required), `GEMINI_LIVE_MODEL` (default `gemini-3.8-live`), `GEMINI_LIVE_VOICE` (default `Puck`).
 - Real-API check: `python scripts/live_smoke_test.py [seconds]` (use `600` for the 10-minute soak).
+
+## Voice Intervenor and Lockdown (Feature 3)
+
+- **Prompt and trigger (ECHO-23).** Each `/ws/audio` session is created with the passive Security Intervenor system prompt (`app/prompts/intervenor_prompt.py`). The model only speaks after a *text* turn that starts with `[SYSTEM ALERT: TRIGGER_BARGE_IN]` and carries the session's random `token=`. The token is never spoken, so someone saying the trigger phrase in the meeting audio is ignored.
+- **Session id.** `/ws/audio?sessionId=<id>` (1 to 128 chars of `A-Za-z0-9_-`; otherwise one is generated) lets a risk event find the live session.
+- **Downlink (ECHO-24).** Model audio (PCM 24 kHz) is forwarded on the same socket as text frames `{"type":"BARGE_IN_AUDIO","audio":"<base64>","sampleRate":24000}`.
+- **Events channel (ECHO-25).** `ws://.../ws/events?sessionId=<id>` is for the Meet extension and the ERP portal. When the risk score is above `0.85` the server sends `{"type":"LOCK_SESSION","sessionId","riskScore","lockReason","acousticFlag","timestamp"}` to every client of that session and writes `incident_logs/<sessionId>` to Cloud Firestore when `GOOGLE_CLOUD_PROJECT` is set. A client that connects after the lock is locked immediately. The lock is final. Close codes: `1008` bad session id, `1013` too many sockets.
+- **Risk entry point.** `LockdownService.handle_risk(session_id, score, reason)` is what the Supervisor Agent (Feature 2) calls. For manual rehearsal, set `ECHO_ENABLE_RISK_TRIGGER=1` and `ECHO_INTERNAL_KEY`, then `POST /internal/risk` with header `X-Echo-Internal-Key` and body `{"sessionId","riskScore","reason"}`.
+- **Tests:** `python -m pytest tests -q`.
