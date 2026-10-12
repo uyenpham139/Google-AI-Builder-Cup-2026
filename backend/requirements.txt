@@ -6,3 +6,4 @@ google-genai>=0.1.0
 pydantic>=2.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+google-cloud-firestore>=2.16.0
