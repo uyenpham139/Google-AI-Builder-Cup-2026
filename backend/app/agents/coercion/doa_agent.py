@@ -5,7 +5,6 @@ from google.genai import types
 
 from dummies.mock_doa_data import MOCK_OPERATOR_LIMITS, MOCK_WHITELIST_BENEFICIARIES
 
-# Task 1 & 2: Define Tool Schema and Logic
 def verify_treasury_policy(operator_id: str, amount_usd: float, beneficiary_account: str) -> dict:
     """
     Checks whether a money transfer transaction violates the DoA limit and the beneficiary account whitelist.
@@ -38,43 +37,15 @@ def verify_treasury_policy(operator_id: str, amount_usd: float, beneficiary_acco
         violation_score += 0.3
         violations.append(f"Beneficiary account ({beneficiary_account}) is not in the verified partner whitelist")
         
-    if not limit_exceeded and not is_whitelisted:
-        # Specific logic goes here
-        pass
-
     return {
         "doa_violation_score": min(1.0, round(violation_score, 1)),
-        "is_compliant": violation_score == 0.0,
+        "is_compliant": not violations,
         "violations": violations
     }
 
-# Task 1: Standard OpenAPI Schema
-verify_treasury_policy_schema = {
-    "name": "verify_treasury_policy",
-    "description": "Checks whether a money transfer transaction violates the DoA limit and the beneficiary account whitelist.",
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "operator_id": {
-                "type": "STRING",
-                "description": "Employee ID (e.g., acc_uyen_01)"
-            },
-            "amount_usd": {
-                "type": "NUMBER",
-                "description": "Transaction amount in USD"
-            },
-            "beneficiary_account": {
-                "type": "STRING",
-                "description": "Beneficiary account number"
-            }
-        },
-        "required": ["operator_id", "amount_usd", "beneficiary_account"]
-    }
-}
-
 class DoAComplianceAgent:
     """
-    Task 3: DoA Compliance Agent integrated with Gemini Function Calling
+    DoA Compliance Agent integrated with Gemini Function Calling
     """
     def __init__(self, api_key: str = None):
         # Initialize GenAI client
@@ -86,8 +57,6 @@ class DoAComplianceAgent:
         """
         # Use Gemini with tools declaration
         # google-genai allows passing python functions directly
-        
-        start_time = time.time()
         
         response = self.client.models.generate_content(
             model=os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash'),

@@ -1,8 +1,6 @@
 import pytest
 from app.agents.coercion.doa_agent import verify_treasury_policy
 
-# Task 4: Unit & Boundary Testing
-
 def test_verify_treasury_policy_pass():
     # amount = 50000 (PASS) for operator 'acc_uyen_01' (limit 100000)
     result = verify_treasury_policy(
