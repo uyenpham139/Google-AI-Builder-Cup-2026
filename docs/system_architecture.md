@@ -80,3 +80,63 @@ To prevent legitimate business conversations from triggering accidental meeting 
    - **REST API:** `POST /api/alerts/{session_id}/dismiss` allows SecOps operators to unlock an enforced session, suppress subsequent alarms, and log the feedback audit record for continuous model tuning.
    - **WebSocket Action:** Supports `{ "type": "dismiss_alert", "reason": "..." }` directly from the client.
 
+## 5. 3-Tier Speech Synthesis & Voice Barge-In Architecture
+
+To deliver emergency spoken alerts without risking call audio lockup or external dependency failures, the client speech engine employs a **3-tier progressive cascade**:
+
+```mermaid
+flowchart TD
+    Trigger([Voice Barge-In Event]) --> T1{Tier 1: ElevenLabs API}
+    T1 -->|HTTP 200 OK| Play1[Play Ultra-Realistic Emotional Audio]
+    T1 -->|Timeout > 4.5s / 401 / 429 Quota| Log1[Warning Log: Fallback triggered]
+    
+    Log1 --> T2{Tier 2: Google Natural Voice}
+    T2 -->|Google Neural Voice Found| Play2[Play High-Fidelity Google Web Speech]
+    T2 -->|Browser Unsupported / Offline| Log2[Warning Log: Offline Fallback]
+    
+    Log2 --> T3[Tier 3: Classic System Offline Robot Synth]
+    T3 --> Play3[Play Microsoft David/Zira Desktop - Guaranteed 0ms Offline]
+```
+
+1. **Tier 1 — ElevenLabs Turbo v2.5 (`xi-api-key`):**
+   - Generates hyper-realistic vocal delivery with expressive inflection, panic cadence, and telephone audio artifacts.
+   - Guarded by an `AbortController` timeout guard (4.5s) to guarantee zero latency stalls under packet drops.
+2. **Tier 2 — Google Natural Voice (Browser Neural Fallback):**
+   - Leverages Chrome's pre-warmed Google Neural speech models (`Google US English`, `Google UK English`, `Google Vietnamese`).
+   - Instant zero-token fallback when ElevenLabs credits are exhausted or network drops occur.
+3. **Tier 3 — Classic System Robot Synth (Zero-Failure Fallback):**
+   - Operating system local synthesized voice (`Microsoft David Desktop`, `Microsoft Zira`).
+   - 100% offline, zero-network, guaranteeing critical security warnings are never silenced.
+
+## 6. Cross-Application Zero-Trust Policy Enforcement (CAEP RFC 9493)
+
+Echo decouples the **Communication Layer** (Conference call app on `:3001`) from the **Financial Settlement Layer** (Corporate treasury portal on `:3000`). When fraud is confirmed, Echo issues a Continuous Access Evaluation Profile (**CAEP RFC 9493**) session revocation event:
+
+```mermaid
+sequenceDiagram
+    participant Call as Call App (:3001)
+    participant Back as FastAPI Backend (:8000)
+    participant ERP as Treasury Portal (:3000)
+    participant User as Treasury Controller
+
+    Call->>Back: Stream Transcript (CEO: "Wire $25.6M immediately, skip CFO approval")
+    Back->>Back: Supervisor Synthesizes Risk Score (0.95 CRITICAL)
+    
+    par Concurrent Interception (< 50ms)
+        Back-->>Call: SECURITY_ALERT { action: "TRIGGER_BARGE_IN_AND_LOCK" }
+        Call->>User: Audio Barge-in: "Security alert. Wire transfer portal locked."
+    and CAEP Broadcast
+        Back-->>ERP: CAEP RFC 9493: LOCK_SESSION { session_id, risk_score: 0.95 }
+        ERP->>ERP: Mount LockOverlay (Full-screen backdrop, z-index 50)
+        ERP->>ERP: Swallow Enter / Space keydowns
+        ERP->>ERP: Abort Pending 2FA / Wire Submission (Status: BLOCKED)
+    end
+
+    Note over ERP,User: Transaction #TX-ARUP88 Frozen. Capital Flight Prevented!
+```
+
+### Key Enforcement Mechanisms:
+- **Input Trapping:** The `LockOverlay` listens to the global `window` capture phase and cancels `Enter` and `Space` keypresses, preventing coerced employees from completing the 2FA submission under emotional duress.
+- **Dual-State Verification:** Even if client-side code were tampered with, the backend ledger freezes the transaction `#TX-2026-ARUP88` server-side, returning HTTP 403 on wire settlement endpoints.
+- **SecOps Audit Trail:** An operator override endpoint (`POST /api/alerts/{session_id}/dismiss` and `POST /api/erp/unlock`) enforces auditable human verification before any frozen funds can be released.
+

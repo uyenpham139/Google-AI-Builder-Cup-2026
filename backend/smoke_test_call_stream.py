@@ -28,40 +28,40 @@ CALL_CONVERSATION_TIMELINE = [
     {
         "turn": 1,
         "timestamp_str": "00:08",
-        "speaker": "Caller (Giám đốc Tuấn)",
-        "text": "Alo chào Lan, anh Tuấn đây. Em đang ở văn phòng công ty đúng không?",
+        "speaker": "Caller (Director Robert)",
+        "text": "Hello Alex, Robert here. Are you in the corporate office right now?",
         "expected_nature": "BENIGN_GREETING"
     },
     {
         "turn": 2,
         "timestamp_str": "00:25",
-        "speaker": "Caller (Giám đốc Tuấn)",
-        "text": "Tiến độ quyết toán chi phí cho dự án Cloud đợt này bên kỹ thuật đã gửi hóa đơn đối soát qua chưa em?",
+        "speaker": "Caller (Director Robert)",
+        "text": "Has the engineering department submitted the reconciliation invoice for the Cloud infrastructure project yet?",
         "expected_nature": "BENIGN_STATUS_CHECK"
     },
     {
         "turn": 3,
         "timestamp_str": "00:48",
-        "speaker": "Caller (Giám đốc Tuấn)",
-        "text": "Ok tốt lắm, tiện thể lát em xuất giúp anh file báo cáo tài chính quý 3 gửi qua email trước 5h chiều nhé.",
+        "speaker": "Caller (Director Robert)",
+        "text": "Great, please also export the Q3 financial statement and email it to me before 5 PM today.",
         "expected_nature": "ROUTINE_FINANCIAL_REQUEST"
     },
     {
         "turn": 4,
         "timestamp_str": "01:12",
-        "speaker": "Caller (Giám đốc Tuấn)",
-        "text": "Mọi việc ở phòng kế toán tuần này vẫn ổn định chứ, server và hạ tầng không phát sinh sự cố gì chứ em?",
+        "speaker": "Caller (Director Robert)",
+        "text": "Is everything running smoothly in the accounting division this week? No server or payment gateway issues, right?",
         "expected_nature": "CASUAL_CHATTER"
     },
     {
         "turn": 5,
         "timestamp_str": "01:38",
-        "speaker": "Caller (Giám đốc Tuấn)",
+        "speaker": "Caller (Director Robert)",
         "text": (
-            "À Lan này, có việc này cực kỳ khẩn cấp và tối mật. Anh đang họp kín với đối tác M&A chiến lược ở nước ngoài. "
-            "Em lập lệnh chuyển ngay 15 tỷ VND sang số tài khoản 190382910 ngân hàng Techcombank trước 2h chiều giúp anh. "
-            "Tuyệt đối không được bàn luận hay nói với ai, bỏ qua chữ ký duyệt thứ hai của Kế toán trưởng, "
-            "làm gấp kẻo lỡ thương vụ lớn của công ty, anh chịu toàn bộ trách nhiệm!"
+            "Alex, listen carefully. Something extremely urgent and strictly confidential has come up. "
+            "I am in a closed M&A board meeting in Singapore right now. You need to wire twenty-five point six million dollars "
+            "immediately to the Standard Chartered offshore escrow account before two PM today. "
+            "Tell absolutely no one. Skip the dual-signature requirement—I take full executive liability. Execute the transfer right now!"
         ),
         "expected_nature": "COERCION_ATTACK_PIVOT"
     }
@@ -71,24 +71,24 @@ async def run_call_stream_simulation():
     print("=" * 84)
     print("  ECHO-32: REAL-TIME CALL STREAMING SMOKE TEST (TWO-TIER ARCHITECTURE)")
     print("=" * 84)
-    print("  KỊCH BẢN: Cuộc gọi bắt đầu bằng trò chuyện công việc bình thường,")
-    print("            sau đó kẻ gian mới tung chiêu ép chuyển tiền khẩn cấp.")
+    print("  SCENARIO: Call begins with benign operational business talk,")
+    print("            followed by a sudden high-pressure CEO Fraud wire demand.")
     print("=" * 84)
 
     api_key = os.environ.get("GEMINI_API_KEY")
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
     masked_key = f"{api_key[:6]}...{api_key[-4:]}" if api_key and len(api_key) > 10 else "NOT SET"
 
     print(f"[*] Gemini Model      : {model_name}")
     print(f"[*] API Key Status    : {'CONFIGURED (' + masked_key + ')' if api_key else 'MISSING'}")
     print(f"[*] Protocol          : WebSocket Continuous Stream (/ws/call)")
-    print(f"[*] Tier-1 Filter     : Local Regex & Unicode Guard (< 1ms, 0 API Token)")
+    print(f"[*] Tier-1 Filter     : Local Regex & Heuristic Guard (< 1ms, 0 API Token)")
     print(f"[*] Tier-2 Trigger    : Selective Cloud LLM Deep Analysis")
     print("-" * 84)
 
-    print("\n[1/3] Khởi tạo Hệ thống Hai Tầng (Two-Tier Coercion Agent)...")
+    print("\n[1/3] Initializing Two-Tier Coercion Agent...")
     agent = CoercionIntentAgent()
-    print("  -> Hệ thống sẵn sàng tiếp nhận cuộc gọi qua WebSocket.\n")
+    print("  -> System ready to accept streaming call dialogue.\n")
 
     rolling_history = []
     stats = {
@@ -100,7 +100,7 @@ async def run_call_stream_simulation():
         "alert_triggered": False
     }
 
-    print("[2/3] Bắt đầu phiên hội thoại trực tiếp theo dòng thời gian:")
+    print("[2/3] Starting real-time dialogue simulation:")
     print("=" * 84)
 
     for step in CALL_CONVERSATION_TIMELINE:
@@ -113,11 +113,10 @@ async def run_call_stream_simulation():
         print(f"\n[⏱️ Timeline {t_str}] -- Turn #{turn} ({nature})")
         print(f"  🗣️ {spk}: \"{txt[:95]}{'...' if len(txt) > 95 else ''}\"")
 
-        # Cập nhật Rolling Window
+        # Update Rolling Window
         rolling_history.append(txt)
-        sliding_window_context = " ".join(rolling_history[-5:])
 
-        # Đánh giá qua Agent Hai Tầng
+        # Evaluate through Two-Tier Agent
         start_time = time.perf_counter()
         eval_result = await agent.evaluate_intent(txt)
         turn_latency_ms = (time.perf_counter() - start_time) * 1000
@@ -130,38 +129,38 @@ async def run_call_stream_simulation():
         if tier_executed == "TIER_1_LOCAL":
             stats["llm_skipped"] += 1
             stats["total_tier1_time_ms"] += turn_latency_ms
-            print(f"  ⚡ [TIER-1 LOCAL] Xử lý: {turn_latency_ms:.2f} ms | Phí: 0 token | Trạng thái: AN TOÀN")
-            print(f"     -> Quyết định: Hội thoại thông thường -> BỎ QUA GỌI CLOUD LLM.")
+            print(f"  ⚡ [TIER-1 LOCAL] Evaluated in: {turn_latency_ms:.2f} ms | Cost: 0 tokens | Status: BENIGN")
+            print(f"     -> Decision: Routine business conversation -> SKIPPED CLOUD LLM CALL.")
 
         elif tier_executed in ("TIER_2_GEMINI", "TIER_1_FALLBACK"):
             stats["llm_calls"] += 1
             stats["tier2_time_ms"] += turn_latency_ms
             stats["alert_triggered"] = True
 
-            print(f"  🚨 [TIER-1 TRIGGERED] Phát hiện dấu hiệu Ép Buộc / Tài Chính khả nghi!")
-            print(f"     -> Tín hiệu: {eval_result.get('signals', [])}")
-            print(f"     -> Chuyển tiếp Tầng 2 (Gemini Flash) phân tích sâu...")
-            print(f"  🧠 [TIER-2 GEMINI] Phản hồi trong: {turn_latency_ms:.2f} ms")
+            print(f"  🚨 [TIER-1 TRIGGERED] Financial coercion / urgency signals detected!")
+            print(f"     -> Signals: {eval_result.get('signals', [])}")
+            print(f"     -> Escalating to Tier-2 (Gemini Flash) for deep intent analysis...")
+            print(f"  🧠 [TIER-2 GEMINI] Response time: {turn_latency_ms:.2f} ms")
             print(f"     -> Coercion Risk Score : {score:.2f} (CRITICAL)")
             print(f"     -> Matched Tactics     : {', '.join(tactics)}")
             print(f"     -> Extracted Entities  : {json.dumps(entities, ensure_ascii=False)}")
-            print(f"\n  [🚨 PHÁT HIỆN TẤN CÔNG GIAN LẬN - CAN THIỆP NGAY LẬP TỨC!]")
-            print(f"     [!] Supervisor Action: KÍCH HOẠT BARGE-IN CẮT CUỘC GỌI")
-            print(f"     [!] SecOps Action    : KHÓA TỨC THÌ CỔNG THANH TOÁN ERP")
+            print(f"\n  [🚨 ACTIVE FRAUD ATTACK DETECTED - IMMEDIATE INTERCEPTION!]")
+            print(f"     [!] Supervisor Action: TRIGGER VOICE BARGE-IN AUDIO ALERT")
+            print(f"     [!] SecOps Action    : DISPATCH CAEP RFC 9493 INSTANT ERP LEDGER LOCK")
 
-    # Báo cáo tổng kết
+    # Performance & Cost Efficiency Summary
     print("\n" + "=" * 84)
-    print("  [3/3] TỔNG KẾT HIỆU NĂNG VÀ TỐI ƯU CHI PHÍ")
+    print("  [3/3] PERFORMANCE & COST OPTIMIZATION SUMMARY")
     print("=" * 84)
     savings_pct = (stats["llm_skipped"] / stats["total_turns"]) * 100
     avg_t1_ms = stats["total_tier1_time_ms"] / max(stats["llm_skipped"], 1)
 
-    print(f"  - Tổng số câu thoại trong cuộc gọi  : {stats['total_turns']}")
-    print(f"  - Số lần gọi Cloud LLM (Gemini)      : {stats['llm_calls']} lần (Chỉ khi kẻ gian ra tay)")
-    print(f"  - Số lần Lọc Cục Bộ thành công       : {stats['llm_skipped']} lần (Tránh gọi AI lãng phí)")
-    print(f"  - Tỷ lệ TIẾT KIỆM Token & API Quota  : {savings_pct:.1f}%")
-    print(f"  - Độ trễ trung bình của Tầng 1       : {avg_t1_ms:.2f} ms (Gần như tức thời)")
-    print(f"  - Trạng thái An toàn                 : {'BẮT QUẢ TANG THÀNH CÔNG VÀ CHẶN KỊP THỜI' if stats['alert_triggered'] else 'KHÔNG PHÁT HIỆN'}")
+    print(f"  - Total turns in conversation      : {stats['total_turns']}")
+    print(f"  - Cloud LLM Calls (Gemini)         : {stats['llm_calls']} (Invoked only during attack pivot)")
+    print(f"  - Local Filter Interceptions       : {stats['llm_skipped']} (Zero-token compute)")
+    print(f"  - Token & API Quota Savings        : {savings_pct:.1f}%")
+    print(f"  - Average Tier-1 Latency           : {avg_t1_ms:.2f} ms (Sub-millisecond)")
+    print(f"  - Final Security Status            : {'ATTACK CAUGHT & INTERCEPTED' if stats['alert_triggered'] else 'NO THREAT DETECTED'}")
     print("=" * 84)
 
 def main():

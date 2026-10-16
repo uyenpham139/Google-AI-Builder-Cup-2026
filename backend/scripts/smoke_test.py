@@ -7,7 +7,7 @@ def run_smoke_test():
     print("SMOKE TEST 1: DIRECT TOOL CALL (No API Key Required)")
     print("="*60)
     
-    # Kịch bản 1: Vi phạm
+    # Scenario 1: Critical Policy Breach
     print("\n--- Scenario 1: Critical Violation ---")
     result_fail = verify_treasury_policy(
         operator_id="acc_uyen_01",
@@ -16,7 +16,7 @@ def run_smoke_test():
     )
     print(json.dumps(result_fail, indent=4, ensure_ascii=False))
 
-    # Kịch bản 2: Hợp lệ
+    # Scenario 2: Whitelisted & Compliant
     print("\n--- Scenario 2: Fully Compliant ---")
     result_pass = verify_treasury_policy(
         operator_id="acc_uyen_01",

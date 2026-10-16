@@ -51,16 +51,12 @@ backend/
 
 4. **Run the FastAPI server (Development):**
    ```bash
-   fastapi dev app/main.py
-   ```
-   *Alternatively, using uvicorn directly:*
-   ```bash
-   uvicorn app.main:app --reload
+   python -m uvicorn app.main:app --reload --port 8000
    ```
 
 5. **Run the FastAPI server (Production):**
    ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
    
    The backend API will be available at [http://localhost:8000](http://localhost:8000).

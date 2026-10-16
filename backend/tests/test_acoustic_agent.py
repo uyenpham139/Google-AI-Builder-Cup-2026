@@ -45,7 +45,7 @@ def generate_dummy_pcm(frequency=440, duration=2.0, sample_rate=16000, noise_lev
 
 @pytest.mark.asyncio
 async def test_evaluate_pcm_artifacts_int16_conversion(mock_agent):
-    # Unit Test: Kiểm tra hàm trích xuất xử lý đúng mảng nhị phân Int16 không bị tràn số.
+    # Unit Test: Verifies PCM extraction correctly handles binary Int16 array without overflow.
     pcm_bytes = generate_dummy_pcm(frequency=440, duration=1.0)
     
     # Mock Gemini response
@@ -66,8 +66,8 @@ async def test_evaluate_pcm_artifacts_int16_conversion(mock_agent):
 @pytest.mark.asyncio
 async def test_integration_accuracy_test(mock_agent):
     """
-    Accuracy Test: Chạy test trên tập dữ liệu gồm 10 file audio (5 file AI clone, 5 file người thật)
-    đạt độ chính xác tối thiểu 80%.
+    Accuracy Test: Evaluates model performance on 10 audio files (5 AI cloned voices, 5 natural human voices)
+    with >= 80% detection accuracy threshold.
     """
     # 5 Fake voices (flattened, stable pitch, low noise)
     fake_voices = [
