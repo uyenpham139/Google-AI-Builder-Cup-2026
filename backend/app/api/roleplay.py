@@ -50,11 +50,17 @@ FALLBACK_ACCOUNTANT_REPLIES_EN = [
     "Mr. Higgins, our Echo security guardian just flagged this transaction. I cannot proceed without secondary confirmation."
 ]
 
+import asyncio
+
+_genai_client = None
+
 def get_genai_client():
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return None
-    return genai.Client(api_key=api_key)
+    global _genai_client
+    if _genai_client is None:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if api_key:
+            _genai_client = genai.Client(api_key=api_key)
+    return _genai_client
 
 @router.post("/start", response_model=RoleplayStartResponse)
 async def start_roleplay(req: RoleplayStartRequest):
@@ -113,12 +119,18 @@ async def generate_roleplay_reply(req: RoleplayReplyRequest):
 
     if client:
         try:
-            response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=full_prompt,
+            # 2.8s fast timeout so AI doesn't leave awkward silence
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=full_prompt,
+                ),
+                timeout=2.8
             )
             if response and response.text:
                 reply_text = response.text.strip().replace("*", "").replace("#", "").replace('"', '').strip()
+        except asyncio.TimeoutError:
+            print("[Roleplay API] Gemini generation timed out (>2.8s) -> using instant fallback")
         except Exception as e:
             print(f"[Roleplay API] Gemini generation error: {e}")
 

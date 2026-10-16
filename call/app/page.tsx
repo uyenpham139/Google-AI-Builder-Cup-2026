@@ -26,10 +26,15 @@ import {
   CheckCircle2,
   Cpu,
   Lock,
-  Key
+  Key,
+  Bot,
+  Zap,
+  Share2,
+  Wand2
 } from 'lucide-react';
 import { API_URL, BARGE_IN_MESSAGE, CALLER, SCENARIOS, SELF, Scenario, WS_URL } from '@/lib/config';
 
+type CallMode = 'select' | 'p2p' | 'ai';
 type Guard = 'safe' | 'analyzing' | 'suspicious' | 'alert' | 'disabled';
 type Caption = { id: number; text: string; speaker: string; interim?: boolean };
 type Role = 'caller' | 'callee';
@@ -65,12 +70,17 @@ const GUARD_UI: Record<Guard, { label: string; cls: string; dot: string; Icon: t
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function speak(text: string, opts: { rate?: number; voiceId?: string } = {}): Promise<void> {
+async function speak(text: string, opts: { rate?: number; voiceId?: string; fast?: boolean } = {}): Promise<void> {
   if (typeof window === 'undefined') return;
 
+  const fastPref = localStorage.getItem('echo_tts_fast');
+  // Default to fast mode (true) unless user explicitly turned it off in settings
+  const isFast = opts.fast ?? (fastPref === null ? true : fastPref === 'true');
+
   const elevenLabsKey =
-    localStorage.getItem('echo_elevenlabs_key')?.trim() ||
-    process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY?.trim();
+    !isFast
+      ? (localStorage.getItem('echo_elevenlabs_key')?.trim() || process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY?.trim())
+      : null;
   const voiceId =
     localStorage.getItem('echo_elevenlabs_voice_id') ||
     opts.voiceId ||
@@ -78,13 +88,13 @@ async function speak(text: string, opts: { rate?: number; voiceId?: string } = {
     'pNInz6obpgDQGcFmaJgB'; // Adam
 
   // =========================================================================
-  // TIER 1: ElevenLabs Ultra-Realistic AI Voice (Priority 1)
+  // TIER 1: ElevenLabs Ultra-Realistic AI Voice (Only if fast mode is OFF)
   // =========================================================================
   if (elevenLabsKey) {
     try {
       console.log('[TTS Engine] Tier 1: Attempting ElevenLabs voice synthesis...');
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4500); // 4.5s timeout guard
+      const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout guard
 
       const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
         method: 'POST',
@@ -126,7 +136,7 @@ async function speak(text: string, opts: { rate?: number; voiceId?: string } = {
         console.warn(`[TTS Engine] Tier 1 (ElevenLabs) HTTP ${res.status}: ${errText}. Falling back to Tier 2...`);
       }
     } catch (e) {
-      console.warn('[TTS Engine] Tier 1 (ElevenLabs) failed or timed out:', e, '-> Falling back to Tier 2 (Google Voice)...');
+      console.warn('[TTS Engine] Tier 1 (ElevenLabs) skipped or timed out -> Falling back to Tier 2 (Google Voice)...');
     }
   }
 
@@ -234,6 +244,9 @@ function playTestChime() {
 
 export default function CallPage() {
   const [inCall, setInCall] = useState(true);
+  const [callMode, setCallMode] = useState<CallMode>('select'); // 'select' | 'p2p' | 'ai'
+  const [voiceFilterOn, setVoiceFilterOn] = useState(false); // Deepfake voice disguise for friend/caller roleplay
+  const [fastTts, setFastTts] = useState(true); // Ultra-fast browser voice (<500ms response)
   const [role, setRole] = useState<Role>('callee'); // Callee = Alex Chen (Treasury Controller), Caller = Robert Higgins (CEO)
   const [isEchoActive, setIsEchoActive] = useState(true); // PLUGIN SWITCH: Guard ON/OFF
   const [sidePanel, setSidePanel] = useState<SidePanel>('none');
@@ -280,14 +293,32 @@ export default function CallPage() {
   const lastUserSpeechRef = useRef<string>('');
   const pluginMenuRef = useRef<HTMLDivElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const voiceFilterOnRef = useRef(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
-  // Load preferences from localStorage on mount
+  // Load preferences from localStorage on mount & parse URL parameters
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const urlRole = params.get('role');
+      const urlMode = params.get('mode') as CallMode | null;
+
       if (urlRole === 'caller' || urlRole === 'callee') {
         setRole(urlRole);
+      }
+
+      // If user opened with link ?mode=p2p or ?role=caller -> automatically enter P2P mode
+      if (urlMode === 'p2p' || urlRole === 'caller') {
+        setCallMode('p2p');
+        // Scammer/CEO role gets AI deepfake voice modifier turned on by default
+        if (urlRole === 'caller') {
+          setVoiceFilterOn(true);
+          voiceFilterOnRef.current = true;
+        }
+      } else if (urlMode === 'ai') {
+        setCallMode('ai');
+      } else {
+        setCallMode('select');
       }
 
       const savedDefault = localStorage.getItem('echo_default_guard_active');
@@ -302,12 +333,109 @@ export default function CallPage() {
       if (savedBargeIn !== null) setVoiceBargeInAlert(savedBargeIn === 'true');
       const savedSensitivity = localStorage.getItem('echo_risk_sensitivity') as RiskSensitivity | null;
       if (savedSensitivity) setRiskSensitivity(savedSensitivity);
+      const savedFastTts = localStorage.getItem('echo_tts_fast');
+      if (savedFastTts !== null) setFastTts(savedFastTts === 'true');
       const savedKey = localStorage.getItem('echo_elevenlabs_key') || process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '';
       if (savedKey) setElevenLabsApiKey(savedKey);
       const savedVoice = localStorage.getItem('echo_elevenlabs_voice_id') || process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB';
       if (savedVoice) setElevenLabsVoiceId(savedVoice);
     }
   }, []);
+
+  // Web Audio API: Apply Telephone & Deepfake Voice Disguise Filter
+  const applyVoiceFilterToStream = useCallback((rawStream: MediaStream) => {
+    try {
+      const AudioCtxClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtxClass) return rawStream.getAudioTracks()[0];
+
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioCtxClass();
+      }
+      const ctx = audioContextRef.current;
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      const source = ctx.createMediaStreamSource(rawStream);
+
+      // 1. Highpass at 340Hz (eliminates low natural room warmth, creates phone band)
+      const highpass = ctx.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = 340;
+
+      // 2. Lowpass at 3200Hz (telephony bandwidth cutoff)
+      const lowpass = ctx.createBiquadFilter();
+      lowpass.type = 'lowpass';
+      lowpass.frequency.value = 3200;
+
+      // 3. Peaking resonance at 1700Hz (adds authoritative metallic/executive presence)
+      const peak = ctx.createBiquadFilter();
+      peak.type = 'peaking';
+      peak.frequency.value = 1700;
+      peak.Q.value = 3.5;
+      peak.gain.value = 9;
+
+      // 4. Subtle distortion waveshaper (gives that compressed digital vocoder feel)
+      const waveShaper = ctx.createWaveShaper();
+      const curve = new Float32Array(256);
+      for (let i = 0; i < 256; i++) {
+        const x = (i * 2) / 256 - 1;
+        curve[i] = ((Math.PI + 3.5) * x) / (Math.PI + 3.5 * Math.abs(x));
+      }
+      waveShaper.curve = curve;
+      waveShaper.oversample = '4x';
+
+      const gain = ctx.createGain();
+      gain.gain.value = 1.35;
+
+      const destination = ctx.createMediaStreamDestination();
+      source.connect(highpass);
+      highpass.connect(lowpass);
+      lowpass.connect(peak);
+      peak.connect(waveShaper);
+      waveShaper.connect(gain);
+      gain.connect(destination);
+
+      return destination.stream.getAudioTracks()[0];
+    } catch (err) {
+      console.warn('Voice filter creation failed, using raw stream:', err);
+      return rawStream.getAudioTracks()[0];
+    }
+  }, []);
+
+  const toggleVoiceFilter = useCallback(() => {
+    const nextState = !voiceFilterOn;
+    setVoiceFilterOn(nextState);
+    voiceFilterOnRef.current = nextState;
+
+    if (localStreamRef.current && peerConnectionRef.current) {
+      const sender = peerConnectionRef.current.getSenders().find((s) => s.track?.kind === 'audio');
+      if (sender) {
+        if (nextState) {
+          const filteredTrack = applyVoiceFilterToStream(localStreamRef.current);
+          if (filteredTrack) sender.replaceTrack(filteredTrack);
+        } else {
+          const rawTrack = localStreamRef.current.getAudioTracks()[0];
+          if (rawTrack) sender.replaceTrack(rawTrack);
+        }
+      }
+    }
+  }, [voiceFilterOn, applyVoiceFilterToStream]);
+
+  const toggleFastTts = useCallback(() => {
+    const next = !fastTts;
+    setFastTts(next);
+    localStorage.setItem('echo_tts_fast', String(next));
+  }, [fastTts]);
+
+  const copyRoomLink = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const inviteRole = role === 'caller' ? 'callee' : 'caller';
+    const url = `${window.location.origin}/?role=${inviteRole}&mode=p2p`;
+    navigator.clipboard.writeText(url);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2500);
+  }, [role]);
 
   // Close plugin popover when clicking outside
   useEffect(() => {
@@ -606,13 +734,13 @@ export default function CallPage() {
   }, [role, pushCaption, sendTranscriptToEcho]);
 
   useEffect(() => {
-    if (inCall && conversationHistory.length === 0) {
+    if (inCall && callMode === 'ai' && conversationHistory.length === 0) {
       const timer = setTimeout(() => {
         startAiRoleplayCall();
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [inCall, conversationHistory.length, startAiRoleplayCall]);
+  }, [inCall, callMode, conversationHistory.length, startAiRoleplayCall]);
 
   // Mic toggle - Natural Speech to Speech
   const toggleMic = async () => {
@@ -631,13 +759,18 @@ export default function CallPage() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
 
+      let trackToSend = stream.getAudioTracks()[0];
+      if (voiceFilterOnRef.current) {
+        const filteredTrack = applyVoiceFilterToStream(stream);
+        if (filteredTrack) trackToSend = filteredTrack;
+      }
+
       if (peerConnectionRef.current) {
-        const audioTrack = stream.getAudioTracks()[0];
         const sender = peerConnectionRef.current.getSenders().find((s) => s.track?.kind === 'audio');
         if (sender) {
-          sender.replaceTrack(audioTrack);
+          sender.replaceTrack(trackToSend);
         } else {
-          peerConnectionRef.current.addTrack(audioTrack, stream);
+          peerConnectionRef.current.addTrack(trackToSend, stream);
         }
 
         if (role === 'caller' && signalingWsRef.current?.readyState === WebSocket.OPEN) {
@@ -679,7 +812,12 @@ export default function CallPage() {
               }
 
               sendTranscriptToEcho(text, currentSpeakerName);
-              triggerAiResponseRef.current(text);
+
+              // ONLY trigger AI partner response in AI Solo mode!
+              // In P2P mode, the human peer is the partner.
+              if (callMode === 'ai') {
+                triggerAiResponseRef.current(text);
+              }
             } else {
               pushCaption(text, currentSpeakerName, true);
             }
@@ -702,7 +840,10 @@ export default function CallPage() {
     const currentSpeakerName = role === 'caller' ? CALLER.name : SELF.name;
     pushCaption(msgText, currentSpeakerName);
     sendTranscriptToEcho(msgText, currentSpeakerName);
-    triggerAiResponse(msgText);
+
+    if (callMode === 'ai') {
+      triggerAiResponse(msgText);
+    }
 
     if (signalingWsRef.current?.readyState === WebSocket.OPEN) {
       signalingWsRef.current.send(
@@ -735,14 +876,6 @@ export default function CallPage() {
       await delay(500);
     }
     if (runIdRef.current === runId) setRunning(false);
-  };
-
-  const copyRoomLink = () => {
-    const targetRole = role === 'callee' ? 'caller' : 'callee';
-    const url = `${window.location.origin}${window.location.pathname}?role=${targetRole}`;
-    navigator.clipboard.writeText(url);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
   };
 
   const toggleEchoActive = () => {
@@ -887,6 +1020,82 @@ export default function CallPage() {
               {remoteAudioActive && (
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
               )}
+            </div>
+
+            {/* Top-Left: Mode Indicator & P2P / AI Quick Controls */}
+            <div className="absolute left-4 top-4 z-20 flex flex-wrap items-center gap-2">
+              {/* Current Mode Badge */}
+              <div className="h-8 px-3 rounded-full text-xs font-medium inline-flex items-center gap-2 backdrop-blur-md bg-slate-900/80 border border-white/10 text-white shadow-sm">
+                {callMode === 'p2p' ? (
+                  <>
+                    <Users className="h-3.5 w-3.5 text-blue-400" />
+                    <span>Mode: Bạn Bè (P2P)</span>
+                    <span className={`h-2 w-2 rounded-full ${peerCount >= 2 ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
+                    <span className="text-[11px] text-slate-400">({peerCount >= 2 ? '2/2 Đã kết nối' : '1/2 Chờ bạn...'})</span>
+                  </>
+                ) : (
+                  <>
+                    <Bot className="h-3.5 w-3.5 text-purple-400" />
+                    <span>Mode: Solo với AI (Gemini 3.5)</span>
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                  </>
+                )}
+              </div>
+
+              {/* Mode-specific actions */}
+              {callMode === 'p2p' ? (
+                <>
+                  {/* Copy Link to invite friend */}
+                  <button
+                    onClick={copyRoomLink}
+                    className="h-8 px-3 rounded-full text-xs font-medium inline-flex items-center gap-1.5 backdrop-blur-md bg-blue-600/80 hover:bg-blue-600 text-white transition-all cursor-pointer border border-blue-400/40 shadow-sm"
+                    title="Sao chép link phòng đàm thoại gửi cho bạn bè"
+                  >
+                    {copiedLink ? <Check className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />}
+                    <span>{copiedLink ? 'Đã chép link!' : 'Copy Link Bạn Bè'}</span>
+                  </button>
+
+                  {/* Toggle Deepfake Voice Filter */}
+                  <button
+                    onClick={toggleVoiceFilter}
+                    className={`h-8 px-3 rounded-full text-xs font-medium inline-flex items-center gap-1.5 backdrop-blur-md transition-all cursor-pointer border shadow-sm ${
+                      voiceFilterOn
+                        ? 'bg-purple-900/80 border-purple-400/60 text-purple-200 ring-2 ring-purple-500/40'
+                        : 'bg-slate-800/80 border-white/10 text-slate-300 hover:bg-slate-700/80'
+                    }`}
+                    title="Biến đổi âm sắc microphone sang giọng AI / điện thoại tổng giám đốc"
+                  >
+                    <Wand2 className="h-3.5 w-3.5 text-purple-400" />
+                    <span>Giả Giọng AI: {voiceFilterOn ? 'BẬT (Deepfake)' : 'TẮT'}</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* Ultra-Fast TTS Toggle */}
+                  <button
+                    onClick={toggleFastTts}
+                    className={`h-8 px-3 rounded-full text-xs font-medium inline-flex items-center gap-1.5 backdrop-blur-md transition-all cursor-pointer border shadow-sm ${
+                      fastTts
+                        ? 'bg-amber-950/80 border-amber-500/40 text-amber-300 ring-1 ring-amber-500/30'
+                        : 'bg-slate-800/80 border-white/10 text-slate-300 hover:bg-slate-700/80'
+                    }`}
+                    title="Phản hồi tức thì bằng Google Natural Voice (<500ms)"
+                  >
+                    <Zap className="h-3.5 w-3.5 text-amber-400" />
+                    <span>Giọng Siêu Tốc (&lt;500ms): {fastTts ? 'BẬT' : 'TẮT'}</span>
+                  </button>
+                </>
+              )}
+
+              {/* Switch Mode Button */}
+              <button
+                onClick={() => setCallMode('select')}
+                className="h-8 px-3 rounded-full text-xs font-medium inline-flex items-center gap-1.5 backdrop-blur-md bg-white/10 hover:bg-white/20 text-slate-200 transition-all cursor-pointer border border-white/10 shadow-sm"
+                title="Mở lại giao diện chọn chế độ đàm thoại"
+              >
+                <Repeat className="h-3.5 w-3.5 text-slate-300" />
+                <span>Đổi Chế Độ</span>
+              </button>
             </div>
 
             {/* Top-Right: Minimalist Echo Guard Status Badge */}
@@ -1286,6 +1495,151 @@ export default function CallPage() {
       </div>
 
       {/* ========================================================================= */}
+      {/* 4.5. CALL MODE SELECTION MODAL (POPUP ON ENTRY OR WHEN SWITCHING MODES)   */}
+      {/* ========================================================================= */}
+      {callMode === 'select' && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in zoom-in-95 duration-150">
+          <div className="w-[840px] max-w-[96vw] rounded-3xl bg-[#202124] border border-white/10 shadow-2xl p-6 sm:p-8 flex flex-col text-white relative">
+            {/* Header */}
+            <div className="text-center max-w-xl mx-auto space-y-2">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-950/80 border border-blue-500/30 text-blue-300 text-xs font-semibold tracking-wide">
+                <Sparkles className="h-3.5 w-3.5 text-blue-400" />
+                <span>ECHO ZERO-TRUST CALL PLATFORM</span>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+                Chọn Chế Độ Cuộc Gọi
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                Thử nghiệm cơ chế bảo vệ Zero-Trust của Echo (RFC 9493 CAEP) ngăn chặn các cuộc gọi lừa đảo tài chính ép chuyển khoản khẩn cấp.
+              </p>
+            </div>
+
+            {/* 2 Interactive Mode Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-6">
+              {/* MODE 1: CALL WITH A FRIEND (P2P + DEEPFAKE VOICE FILTER) */}
+              <div className="relative rounded-2xl bg-[#28292c] hover:bg-[#2d2e32] border border-white/10 hover:border-blue-500/60 transition-all p-5 flex flex-col justify-between group shadow-lg">
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="h-12 w-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
+                      <Users className="h-6 w-6" />
+                    </div>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-400 bg-blue-950/60 px-2.5 py-1 rounded-full border border-blue-500/30">
+                      P2P &bull; Chia Sẻ Link
+                    </span>
+                  </div>
+
+                  <h3 className="text-base sm:text-lg font-bold text-white group-hover:text-blue-300 transition-colors">
+                    Mode 1: Gọi Với Bạn Bè
+                  </h3>
+                  <div className="text-xs text-blue-400/90 font-medium mt-0.5">
+                    Kèm Bộ Lọc Giả Giọng AI Deepfake
+                  </div>
+
+                  <p className="text-xs text-slate-300 mt-2.5 leading-relaxed">
+                    Bạn tự tạo phòng đàm thoại và gửi link cho bạn bè. Một người đóng vai Kẻ lừa đảo (CEO Robert Higgins), một người đóng vai Kế toán (Alex Chen).
+                  </p>
+
+                  <ul className="mt-4 space-y-2 text-xs text-slate-300">
+                    <li className="flex items-start gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <span><strong>Link chia sẻ 1-click</strong>: Bạn bè mở link là kết nối WebRTC trực tiếp.</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <Wand2 className="h-4 w-4 text-purple-400 shrink-0 mt-0.5" />
+                      <span><strong>Bộ lọc giả giọng AI</strong>: Biến giọng nói thành âm sắc điện thoại tổng giám đốc uy quyền.</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <ShieldCheck className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" />
+                      <span><strong>Echo Guard ngầm</strong>: Bắt từ khóa ép buộc chuyển tiền và khóa màn hình Port 3000.</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-6 pt-4 border-t border-white/10 space-y-2">
+                  <button
+                    onClick={() => {
+                      setCallMode('p2p');
+                      copyRoomLink();
+                    }}
+                    className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md active:scale-[0.98]"
+                  >
+                    <Users className="h-4 w-4" />
+                    <span>Chọn Gọi Với Bạn Bè (P2P)</span>
+                  </button>
+                  <p className="text-[11px] text-center text-slate-400">
+                    Tự động sao chép link mời bạn bè vào bộ nhớ tạm
+                  </p>
+                </div>
+              </div>
+
+              {/* MODE 2: SOLO WITH GEMINI AI */}
+              <div className="relative rounded-2xl bg-[#28292c] hover:bg-[#2d2e32] border border-white/10 hover:border-purple-500/60 transition-all p-5 flex flex-col justify-between group shadow-lg">
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="h-12 w-12 rounded-2xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-white shadow-md">
+                      <Bot className="h-6 w-6" />
+                    </div>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-purple-400 bg-purple-950/60 px-2.5 py-1 rounded-full border border-purple-500/30">
+                      Solo AI &bull; &lt;500ms
+                    </span>
+                  </div>
+
+                  <h3 className="text-base sm:text-lg font-bold text-white group-hover:text-purple-300 transition-colors">
+                    Mode 2: Solo Với AI Gemini
+                  </h3>
+                  <div className="text-xs text-purple-400/90 font-medium mt-0.5">
+                    Phản Hồi Siêu Tốc &bull; Đóng Vai Liên Tục
+                  </div>
+
+                  <p className="text-xs text-slate-300 mt-2.5 leading-relaxed">
+                    Trực tiếp đối thoại 1-1 với AI Gemini đóng vai CEO Robert Higgins cực kỳ dồn dập, liên tục ép bạn chuyển $25.6M và không bao giờ im lặng.
+                  </p>
+
+                  <ul className="mt-4 space-y-2 text-xs text-slate-300">
+                    <li className="flex items-start gap-2">
+                      <Zap className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                      <span><strong>Giọng siêu tốc &lt;500ms</strong>: Dùng Google Natural Voice nói tức thì không phải đợi.</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <span><strong>Never Break Character</strong>: Trả lời tất cả câu hỏi, bác bỏ mọi lý do trì hoãn.</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <ShieldCheck className="h-4 w-4 text-purple-400 shrink-0 mt-0.5" />
+                      <span><strong>Tự động khóa Portal</strong>: Echo can thiệp khóa chuyển tiền khi phát hiện ép buộc.</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-6 pt-4 border-t border-white/10 space-y-2">
+                  <button
+                    onClick={() => {
+                      setCallMode('ai');
+                      setConversationHistory([]);
+                      startAiRoleplayCall();
+                    }}
+                    className="w-full py-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md active:scale-[0.98]"
+                  >
+                    <Zap className="h-4 w-4 text-amber-300" />
+                    <span>Bắt Đầu Solo Với AI Gemini</span>
+                  </button>
+                  <p className="text-[11px] text-center text-slate-400">
+                    AI sẽ tự động chào mở màn và đối thoại giọng nói liên tục
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer Note */}
+            <div className="mt-6 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+              <Repeat className="h-3.5 w-3.5 text-slate-400" />
+              <span>Bạn có thể bấm nút <strong>[ 🔁 Đổi Chế Độ ]</strong> ở góc trên bất cứ lúc nào trong cuộc gọi.</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
       {/* 5. FULL SETTINGS DIALOG (GOOGLE MEET STYLE MODAL)                         */}
       {/* ========================================================================= */}
       {settingsOpen && (
@@ -1533,6 +1887,32 @@ export default function CallPage() {
                       >
                         <Volume2 className="h-3.5 w-3.5 text-blue-400" />
                         <span>Test Speaker Audio</span>
+                      </button>
+                    </div>
+
+                    {/* Fast Speech Synthesis Toggle */}
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-[#303134] border border-white/5">
+                      <div>
+                        <div className="text-xs font-medium text-white flex items-center gap-1.5">
+                          <Zap className="h-3.5 w-3.5 text-amber-400" />
+                          <span>Fast Voice Synthesis (&lt;500ms Response)</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Bypasses cloud ElevenLabs network delay and speaks instantly via Google Natural Voice.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={toggleFastTts}
+                        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                          fastTts ? 'bg-amber-500' : 'bg-slate-700'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            fastTts ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
                       </button>
                     </div>
 
