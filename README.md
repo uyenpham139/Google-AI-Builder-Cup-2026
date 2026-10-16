@@ -235,6 +235,7 @@ To prevent operational disruption, Echo implements 3-way contextual cross-valida
 
 ## 📄 Documentation & Architecture
 For in-depth architectural details, refer to:
+- [`docs/gemini-resilience.md`](docs/gemini-resilience.md): Gemini failover, time budgets, and fallback status during outages.
 - [`docs/system_architecture.md`](docs/system_architecture.md): HFT Streaming Architecture, Latency SLAs, and Multi-Agent Orchestration.
 
 ---

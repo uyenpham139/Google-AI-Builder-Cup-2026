@@ -1,17 +1,16 @@
 import pytest
-import pytest_asyncio
 import json
 from unittest.mock import MagicMock, AsyncMock, patch
 from app.agents.coercion.agent import CoercionIntentAgent
+from app.services.gemini import GeminiGateway, GenerationResult
 
 @pytest.fixture
-def mock_agent():
+def mock_agent(monkeypatch):
     # Initialize agent with mocked genai.Client
     with patch("google.genai.Client") as MockClient:
         # Mock API Key
-        import os
-        os.environ["GEMINI_API_KEY"] = "mock_key"
-        agent = CoercionIntentAgent()
+        monkeypatch.setenv("GEMINI_API_KEY", "mock_key")
+        agent = CoercionIntentAgent(gateway=GeminiGateway(client=MockClient()))
         return agent
 
 @pytest.mark.asyncio
@@ -39,7 +38,7 @@ async def test_integration_gemini_accuracy(mock_agent):
             }
         }
         mock_response_obj.text = json.dumps(mock_json_content)
-        mock_agent.gemini_client.aio.models.generate_content = AsyncMock(return_value=mock_response_obj)
+        mock_agent.gateway.client.aio.models.generate_content = AsyncMock(return_value=mock_response_obj)
         
         result = await mock_agent.evaluate_intent(text)
         
@@ -49,3 +48,34 @@ async def test_integration_gemini_accuracy(mock_agent):
         else:
             assert result["coercion_score"] < 0.20
             assert len(result["matched_tactics"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_cloud_outage_preserves_local_detection_and_source():
+    gateway = MagicMock()
+    gateway.generate = AsyncMock(return_value=GenerationResult(error="http_503"))
+    agent = CoercionIntentAgent(gateway=gateway)
+    result = await agent.evaluate_intent("Wire money immediately, skip approval and keep it secret, I am the CEO")
+    assert result["coercion_score"] >= 0.85
+    assert result["tier_executed"] == "TIER_1_FALLBACK"
+    assert result["source"] == "local_rules"
+    assert result["model"] is None
+    assert result["fallback_reason"] == "http_503"
+
+
+@pytest.mark.asyncio
+async def test_invalid_cloud_output_uses_local_detection():
+    gateway = MagicMock()
+    gateway.generate = AsyncMock(return_value=GenerationResult(text='{"coercion_score":"invalid"}', model="primary"))
+    result = await CoercionIntentAgent(gateway=gateway).evaluate_intent("Wire money immediately, skip approval")
+    assert result["source"] == "local_rules"
+    assert result["fallback_reason"] == "invalid_response"
+
+
+@pytest.mark.asyncio
+async def test_benign_conversation_does_not_call_gemini():
+    gateway = MagicMock()
+    gateway.generate = AsyncMock()
+    result = await CoercionIntentAgent(gateway=gateway).evaluate_intent("Good morning, how are you?")
+    assert result["tier_executed"] == "TIER_1_LOCAL"
+    gateway.generate.assert_not_awaited()

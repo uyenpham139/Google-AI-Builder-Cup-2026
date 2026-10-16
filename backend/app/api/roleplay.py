@@ -1,9 +1,8 @@
-import os
 import time
-from typing import List, Optional
+from typing import List, Literal
 from fastapi import APIRouter
 from pydantic import BaseModel
-import google.genai as genai
+from app.services.gemini import get_gemini_gateway, timeout_seconds
 
 router = APIRouter(prefix="/api/call/roleplay", tags=["call-roleplay"])
 
@@ -21,7 +20,9 @@ class RoleplayReplyResponse(BaseModel):
     reply: str
     speaker: str
     latency_ms: float
-    model: str
+    model: str | None
+    source: Literal["gemini", "scripted"]
+    fallback_reason: str | None = None
 
 class RoleplayStartRequest(BaseModel):
     role: str = "caller"
@@ -29,6 +30,7 @@ class RoleplayStartRequest(BaseModel):
 class RoleplayStartResponse(BaseModel):
     greeting: str
     speaker: str
+    source: Literal["scripted_greeting"] = "scripted_greeting"
 
 FALLBACK_CEO_REPLIES_EN = [
     "I am boarding a flight to Singapore right now. You need to release that $25.6 million wire to the Standard Chartered offshore account immediately!",
@@ -49,18 +51,6 @@ FALLBACK_ACCOUNTANT_REPLIES_EN = [
     "Our treasury portal requires a hardware FIDO2 key and secondary approval from the audit committee before releasing these funds.",
     "Mr. Higgins, our Echo security guardian just flagged this transaction. I cannot proceed without secondary confirmation."
 ]
-
-import asyncio
-
-_genai_client = None
-
-def get_genai_client():
-    global _genai_client
-    if _genai_client is None:
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if api_key:
-            _genai_client = genai.Client(api_key=api_key)
-    return _genai_client
 
 @router.post("/start", response_model=RoleplayStartResponse)
 async def start_roleplay(req: RoleplayStartRequest):
@@ -84,7 +74,6 @@ async def generate_roleplay_reply(req: RoleplayReplyRequest):
     Always stays in character and continuously answers all questions.
     """
     start_time = time.perf_counter()
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
     if req.role == "caller":
         system_instructions = (
@@ -114,29 +103,13 @@ async def generate_roleplay_reply(req: RoleplayReplyRequest):
 
     full_prompt = system_instructions + "\n\nCall Transcript History:\n" + "\n".join(context_lines)
 
-    client = get_genai_client()
-    reply_text = ""
-
-    if client:
-        models_to_try = [model_name, "gemini-3.5-flash"] if model_name != "gemini-3.5-flash" else [model_name]
-        for m in models_to_try:
-            try:
-                # 2.8s fast timeout so AI doesn't leave awkward silence
-                response = await asyncio.wait_for(
-                    client.aio.models.generate_content(
-                        model=m,
-                        contents=full_prompt,
-                    ),
-                    timeout=2.8
-                )
-                if response and response.text:
-                    reply_text = response.text.strip().replace("*", "").replace("#", "").replace('"', '').strip()
-                    model_name = m
-                    break
-            except asyncio.TimeoutError:
-                print(f"[Roleplay API] Model {m} timed out (>2.8s) -> trying next or fallback")
-            except Exception as e:
-                print(f"[Roleplay API] Model {m} error: {e}")
+    result = await get_gemini_gateway().generate(
+        full_prompt,
+        timeout=timeout_seconds("GEMINI_ROLEPLAY_TIMEOUT_SECONDS", 16.0),
+        purpose="roleplay",
+    )
+    reply_text = (result.text or "").replace("*", "").replace("#", "").replace('"', '').strip()
+    source = "gemini" if reply_text else "scripted"
 
     if not reply_text:
         import random
@@ -148,5 +121,7 @@ async def generate_roleplay_reply(req: RoleplayReplyRequest):
         reply=reply_text,
         speaker=speaker_name,
         latency_ms=latency_ms,
-        model=model_name
+        model=result.model if source == "gemini" else None,
+        source=source,
+        fallback_reason=(result.error or "empty_response") if source == "scripted" else None,
     )

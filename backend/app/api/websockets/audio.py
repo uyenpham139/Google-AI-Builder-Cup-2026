@@ -4,6 +4,7 @@ import time
 import asyncio
 from typing import List, Dict, Any, Set
 from app.agents.coercion.agent import CoercionIntentAgent
+from app.services.call_analysis import CallAnalysisWorker
 
 router = APIRouter()
 
@@ -66,8 +67,17 @@ class CallSessionState:
         self.dismiss_reason = ""
         self.dismissed_at = None
         self.alert_history: List[Dict[str, Any]] = []
+        self._last_transcript = None
+        self._last_transcript_at = 0.0
 
     def add_transcript(self, text: str, speaker: str = "caller"):
+        fingerprint = (speaker, " ".join(text.split()).casefold())
+        now = time.monotonic()
+        if fingerprint == self._last_transcript and now - self._last_transcript_at < 2.0:
+            self._last_transcript_at = now
+            return False
+        self._last_transcript = fingerprint
+        self._last_transcript_at = now
         self.transcript_history.append({
             "timestamp": time.time(),
             "speaker": speaker,
@@ -76,6 +86,7 @@ class CallSessionState:
         # Keep last 15 turns in rolling window
         if len(self.transcript_history) > 15:
             self.transcript_history.pop(0)
+        return True
 
     def get_sliding_window_text(self) -> str:
         return " ".join([item["text"] for item in self.transcript_history])
@@ -86,6 +97,7 @@ class CallSessionState:
         self.dismiss_reason = reason
         self.dismissed_at = time.time()
         self.consecutive_suspicious_turns = 0
+        self._last_transcript = None
         record = {
             "session_id": self.session_id,
             "dismissed_at": self.dismissed_at,
@@ -113,6 +125,12 @@ async def call_websocket_endpoint(websocket: WebSocket):
             res = await agent.evaluate_intent(window_text, force_llm=True)
             latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
             score = res.get("coercion_score", 0.0)
+            analysis_metadata = {
+                "tier": res.get("tier_executed", "TIER_1_FALLBACK"),
+                "source": res.get("source", "local_rules"),
+                "model": res.get("model"),
+                "fallback_reason": res.get("fallback_reason"),
+            }
             
             if score > state.highest_risk:
                 state.highest_risk = score
@@ -122,7 +140,7 @@ async def call_websocket_endpoint(websocket: WebSocket):
                 payload = {
                     "type": "RISK_UPDATE",
                     "session_id": session_id,
-                    "tier": "TIER_2_GEMINI",
+                    **analysis_metadata,
                     "risk_score": score,
                     "status": "OVERRIDDEN_DISMISSED",
                     "action": "SUPPRESSED_BY_OPERATOR",
@@ -162,7 +180,7 @@ async def call_websocket_endpoint(websocket: WebSocket):
             payload = {
                 "type": alert_type,
                 "session_id": session_id,
-                "tier": "TIER_2_GEMINI",
+                **analysis_metadata,
                 "risk_score": score,
                 "status": alert_status,
                 "matched_tactics": matched_tactics,
@@ -179,7 +197,7 @@ async def call_websocket_endpoint(websocket: WebSocket):
             }
             state.alert_history.append(payload)
             await websocket.send_text(json.dumps(payload, ensure_ascii=False))
-            print(f"[{session_id}] Pushed Tier-2 Alert to client: Risk={score} ({action}) in {latency_ms}ms")
+            print(f"[{session_id}] Analysis ({analysis_metadata['source']}): Risk={score} ({action}) in {latency_ms}ms")
 
             # Real-time Zero-Trust Enforcement: Broadcast LOCK_SESSION to connected ERP Treasury Portals
             if action == "TRIGGER_BARGE_IN_AND_LOCK":
@@ -198,6 +216,7 @@ async def call_websocket_endpoint(websocket: WebSocket):
         except Exception as e:
             print(f"[{session_id}] Background Tier-2 evaluation error: {e}")
 
+    analysis_worker = CallAnalysisWorker(run_tier2_background)
     try:
         while True:
             # Receive either binary audio chunk or JSON transcript
@@ -242,7 +261,14 @@ async def call_websocket_endpoint(websocket: WebSocket):
                         continue
 
                     # 1. Update rolling sliding window
-                    state.add_transcript(turn_text, speaker)
+                    if not state.add_transcript(turn_text, speaker):
+                        await websocket.send_text(json.dumps({
+                            "type": "TRANSCRIPT_SKIPPED",
+                            "session_id": session_id,
+                            "reason": "duplicate_transcript",
+                            "llm_skipped": True,
+                        }))
+                        continue
                     sliding_window = state.get_sliding_window_text()
 
                     # 2. Fast Tier-1 Guard Scan (< 1ms)
@@ -253,6 +279,7 @@ async def call_websocket_endpoint(websocket: WebSocket):
                     should_deep_analyze = t1_res["should_trigger_llm"]
 
                     if not should_deep_analyze:
+                        analysis_worker.update_context(sliding_window)
                         # Benign conversation -> Fast Response, 0 token used
                         await websocket.send_text(json.dumps({
                             "type": "STATUS_OK",
@@ -276,8 +303,8 @@ async def call_websocket_endpoint(websocket: WebSocket):
                             "notice": "Suspicious financial coercion detected. Forwarding to Gemini Cloud..."
                         }, ensure_ascii=False))
 
-                        # Fire and forget Tier-2 evaluation in background (Non-blocking!)
-                        asyncio.create_task(run_tier2_background(sliding_window, turn_text))
+                        # One active analysis; newer turns replace the pending context.
+                        analysis_worker.submit(sliding_window, turn_text)
 
                 elif msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
@@ -285,3 +312,5 @@ async def call_websocket_endpoint(websocket: WebSocket):
     except (WebSocketDisconnect, RuntimeError):
         print(f"[{session_id}] Client disconnected from Call Stream WebSocket")
         # Keep state in ACTIVE_CALL_SESSIONS for audit/status inspection
+    finally:
+        await analysis_worker.close()
