@@ -118,21 +118,25 @@ async def generate_roleplay_reply(req: RoleplayReplyRequest):
     reply_text = ""
 
     if client:
-        try:
-            # 2.8s fast timeout so AI doesn't leave awkward silence
-            response = await asyncio.wait_for(
-                client.aio.models.generate_content(
-                    model=model_name,
-                    contents=full_prompt,
-                ),
-                timeout=2.8
-            )
-            if response and response.text:
-                reply_text = response.text.strip().replace("*", "").replace("#", "").replace('"', '').strip()
-        except asyncio.TimeoutError:
-            print("[Roleplay API] Gemini generation timed out (>2.8s) -> using instant fallback")
-        except Exception as e:
-            print(f"[Roleplay API] Gemini generation error: {e}")
+        models_to_try = [model_name, "gemini-3.5-flash"] if model_name != "gemini-3.5-flash" else [model_name]
+        for m in models_to_try:
+            try:
+                # 2.8s fast timeout so AI doesn't leave awkward silence
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=m,
+                        contents=full_prompt,
+                    ),
+                    timeout=2.8
+                )
+                if response and response.text:
+                    reply_text = response.text.strip().replace("*", "").replace("#", "").replace('"', '').strip()
+                    model_name = m
+                    break
+            except asyncio.TimeoutError:
+                print(f"[Roleplay API] Model {m} timed out (>2.8s) -> trying next or fallback")
+            except Exception as e:
+                print(f"[Roleplay API] Model {m} error: {e}")
 
     if not reply_text:
         import random

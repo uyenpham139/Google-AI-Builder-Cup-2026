@@ -50,43 +50,61 @@ class CoercionIntentAgent:
                 "signals": guard_result.get("detected_signals", [])
             }
 
-        # Step 2: Tier-2 Gemini Flash Deep Analysis
+        import asyncio
         from app.prompts.coercion_prompt import COERCION_INTENT_PROMPT
         prompt = COERCION_INTENT_PROMPT.format(text_segment=text_segment)
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        models_to_try = [primary_model, "gemini-3.5-flash"]
         
-        try:
-            response = await self.gemini_client.aio.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=CoercionEvaluation,
-                    temperature=0.1
-                ),
-            )
-            
-            result = json.loads(response.text)
-            return {
-                "coercion_score": round(result.get("coercion_score", 0.0), 2),
-                "matched_tactics": result.get("matched_tactics", []),
-                "entities": result.get("entities", {}),
-                "raw_text": text_segment,
-                "tier_executed": "TIER_2_GEMINI",
-                "llm_skipped": False,
-                "signals": guard_result.get("detected_signals", [])
-            }
-        except Exception as e:
-            # Fallback to Tier-1 heuristic if Gemini Cloud experiences network issue or quota limit
-            fallback_score = guard_result.get("tier1_risk_score", 0.75)
-            return {
-                "coercion_score": fallback_score,
-                "matched_tactics": guard_result.get("detected_signals", ["SUSPICIOUS_HEURISTIC_MATCH"]),
-                "entities": {
-                    "urgency_level": "HIGH" if fallback_score > 0.6 else "LOW"
-                },
-                "raw_text": text_segment,
-                "tier_executed": "TIER_1_FALLBACK",
-                "llm_skipped": False,
-                "error": str(e)
-            }
+        response = None
+        last_error = None
+        
+        for m in models_to_try:
+            try:
+                # 2.5s timeout prevents SDK from endlessly retrying on 503 UNAVAILABLE
+                response = await asyncio.wait_for(
+                    self.gemini_client.aio.models.generate_content(
+                        model=m,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=CoercionEvaluation,
+                            temperature=0.1
+                        ),
+                    ),
+                    timeout=2.5
+                )
+                if response and response.text:
+                    break
+            except Exception as ex:
+                last_error = ex
+                continue
+
+        if response and response.text:
+            try:
+                result = json.loads(response.text)
+                return {
+                    "coercion_score": round(result.get("coercion_score", 0.0), 2),
+                    "matched_tactics": result.get("matched_tactics", []),
+                    "entities": result.get("entities", {}),
+                    "raw_text": text_segment,
+                    "tier_executed": "TIER_2_GEMINI",
+                    "llm_skipped": False,
+                    "signals": guard_result.get("detected_signals", [])
+                }
+            except Exception as parse_err:
+                last_error = parse_err
+
+        # Fallback to Tier-1 heuristic if Gemini Cloud experiences 503 or latency spikes
+        fallback_score = guard_result.get("tier1_risk_score", 0.85)
+        return {
+            "coercion_score": fallback_score,
+            "matched_tactics": guard_result.get("detected_signals", ["SUSPICIOUS_HEURISTIC_MATCH"]),
+            "entities": {
+                "urgency_level": "HIGH" if fallback_score > 0.6 else "LOW"
+            },
+            "raw_text": text_segment,
+            "tier_executed": "TIER_1_FALLBACK",
+            "llm_skipped": False,
+            "error": str(last_error) if last_error else "Timeout"
+        }
