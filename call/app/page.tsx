@@ -610,23 +610,53 @@ export default function CallPage() {
           if (msg.type === 'PEER_JOINED') {
             setPeerCount(msg.peer_count || 1);
             if (role === 'caller' && msg.peer_count >= 2) {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              sigWs.send(JSON.stringify({ type: 'SDP_OFFER', sdp: offer }));
+              if (pc.signalingState === 'stable') {
+                try {
+                  const offer = await pc.createOffer();
+                  await pc.setLocalDescription(offer);
+                  sigWs.send(JSON.stringify({ type: 'SDP_OFFER', sdp: offer }));
+                } catch (offerErr) {
+                  console.warn('[WebRTC] Create offer error:', offerErr);
+                }
+              }
             }
           } else if (msg.type === 'PEER_LEFT') {
             setPeerCount(msg.peer_count || 1);
             setRemoteAudioActive(false);
           } else if (msg.type === 'SDP_OFFER') {
-            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            sigWs.send(JSON.stringify({ type: 'SDP_ANSWER', sdp: answer }));
+            try {
+              if (pc.signalingState !== 'stable') {
+                await Promise.all([
+                  pc.setLocalDescription({ type: 'rollback' }),
+                  pc.setRemoteDescription(new RTCSessionDescription(msg.sdp)),
+                ]);
+              } else {
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+              }
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              sigWs.send(JSON.stringify({ type: 'SDP_ANSWER', sdp: answer }));
+            } catch (sdpOfferErr) {
+              console.warn('[WebRTC] Handle SDP_OFFER error:', sdpOfferErr);
+            }
           } else if (msg.type === 'SDP_ANSWER') {
-            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            // Guard against calling setRemoteDescription in wrong state ('stable')
+            if (pc.signalingState === 'have-local-offer') {
+              try {
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+              } catch (sdpAnswerErr) {
+                console.warn('[WebRTC] Set remote answer error:', sdpAnswerErr);
+              }
+            } else {
+              console.warn(`[WebRTC] Ignored SDP_ANSWER: expected 'have-local-offer', but signalingState is '${pc.signalingState}'`);
+            }
           } else if (msg.type === 'ICE_CANDIDATE') {
-            if (msg.candidate) {
-              await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            if (msg.candidate && pc.remoteDescription && pc.remoteDescription.type) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              } catch (iceErr) {
+                console.warn('[WebRTC] Add ICE candidate error:', iceErr);
+              }
             }
           } else if (msg.type === 'REMOTE_TRANSCRIPT') {
             pushCaption(msg.text, msg.speaker);
@@ -773,10 +803,16 @@ export default function CallPage() {
           peerConnectionRef.current.addTrack(trackToSend, stream);
         }
 
-        if (role === 'caller' && signalingWsRef.current?.readyState === WebSocket.OPEN) {
-          const offer = await peerConnectionRef.current.createOffer();
-          await peerConnectionRef.current.setLocalDescription(offer);
-          signalingWsRef.current.send(JSON.stringify({ type: 'SDP_OFFER', sdp: offer }));
+        if (role === 'caller' && !sender && signalingWsRef.current?.readyState === WebSocket.OPEN) {
+          if (peerConnectionRef.current.signalingState === 'stable') {
+            try {
+              const offer = await peerConnectionRef.current.createOffer();
+              await peerConnectionRef.current.setLocalDescription(offer);
+              signalingWsRef.current.send(JSON.stringify({ type: 'SDP_OFFER', sdp: offer }));
+            } catch (err) {
+              console.warn('[WebRTC] Offer creation error on mic addTrack:', err);
+            }
+          }
         }
       }
 
