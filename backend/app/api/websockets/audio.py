@@ -2,7 +2,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import json
 import time
 import asyncio
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 from app.agents.coercion.agent import CoercionIntentAgent
 
 router = APIRouter()
@@ -10,6 +10,48 @@ router = APIRouter()
 # Global registry of active sessions for REST API and Supervisor integration
 ACTIVE_CALL_SESSIONS: Dict[str, "CallSessionState"] = {}
 FALSE_POSITIVE_RECORDS: List[Dict[str, Any]] = []
+
+# Real-time WebRTC Signaling rooms for 2-party roleplay calling
+SIGNALING_ROOMS: Dict[str, Set[WebSocket]] = {}
+
+@router.websocket("/ws/signaling/{room_id}")
+async def webrtc_signaling_endpoint(websocket: WebSocket, room_id: str):
+    await websocket.accept()
+    if room_id not in SIGNALING_ROOMS:
+        SIGNALING_ROOMS[room_id] = set()
+    SIGNALING_ROOMS[room_id].add(websocket)
+    peer_count = len(SIGNALING_ROOMS[room_id])
+    print(f"[Signaling] Client joined room '{room_id}' (Total peers: {peer_count})")
+
+    # Notify all peers in the room about participant update
+    notify_payload = json.dumps({"type": "PEER_JOINED", "peer_count": peer_count})
+    for peer in list(SIGNALING_ROOMS[room_id]):
+        try:
+            await peer.send_text(notify_payload)
+        except Exception:
+            pass
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            # Broadcast signaling messages (offers, answers, ICE candidates) to other peer(s)
+            for peer in list(SIGNALING_ROOMS[room_id]):
+                if peer != websocket:
+                    try:
+                        await peer.send_text(raw)
+                    except Exception:
+                        pass
+    except WebSocketDisconnect:
+        SIGNALING_ROOMS[room_id].discard(websocket)
+        peer_count = len(SIGNALING_ROOMS[room_id])
+        print(f"[Signaling] Client left room '{room_id}' (Remaining: {peer_count})")
+        notify_leave = json.dumps({"type": "PEER_LEFT", "peer_count": peer_count})
+        for peer in list(SIGNALING_ROOMS[room_id]):
+            try:
+                await peer.send_text(notify_leave)
+            except Exception:
+                pass
+
 
 class CallSessionState:
     """Manages rolling conversation window, temporal smoothing, and false-positive dismissal"""
@@ -138,6 +180,21 @@ async def call_websocket_endpoint(websocket: WebSocket):
             state.alert_history.append(payload)
             await websocket.send_text(json.dumps(payload, ensure_ascii=False))
             print(f"[{session_id}] Pushed Tier-2 Alert to client: Risk={score} ({action}) in {latency_ms}ms")
+
+            # Real-time Zero-Trust Enforcement: Broadcast LOCK_SESSION to connected ERP Treasury Portals
+            if action == "TRIGGER_BARGE_IN_AND_LOCK":
+                try:
+                    from app.api.erp import broadcast_erp_lock
+                    tactics_str = ", ".join(matched_tactics) if matched_tactics else "Coercion & DoA breach"
+                    asyncio.create_task(broadcast_erp_lock(
+                        session_id=session_id,
+                        reason=f"Coercive Financial Threat Intercepted ({tactics_str}) with Risk Score {score}",
+                        risk_score=score,
+                        details={"matched_tactics": matched_tactics, "entities": res.get("entities", {})}
+                    ))
+                except Exception as b_err:
+                    print(f"[{session_id}] ERP broadcast error: {b_err}")
+
         except Exception as e:
             print(f"[{session_id}] Background Tier-2 evaluation error: {e}")
 
@@ -225,6 +282,6 @@ async def call_websocket_endpoint(websocket: WebSocket):
                 elif msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         print(f"[{session_id}] Client disconnected from Call Stream WebSocket")
         # Keep state in ACTIVE_CALL_SESSIONS for audit/status inspection

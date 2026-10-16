@@ -90,7 +90,7 @@ class DoAComplianceAgent:
         start_time = time.time()
         
         response = self.client.models.generate_content(
-            model=os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash'),
+            model=os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash-lite'),
             contents=user_prompt,
             config=types.GenerateContentConfig(
                 tools=[verify_treasury_policy],

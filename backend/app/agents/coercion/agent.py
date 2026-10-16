@@ -53,7 +53,7 @@ class CoercionIntentAgent:
         # Step 2: Tier-2 Gemini Flash Deep Analysis
         from app.prompts.coercion_prompt import COERCION_INTENT_PROMPT
         prompt = COERCION_INTENT_PROMPT.format(text_segment=text_segment)
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
         
         try:
             response = await self.gemini_client.aio.models.generate_content(
