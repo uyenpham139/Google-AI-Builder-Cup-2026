@@ -24,7 +24,7 @@ allowed_origins = list(set(default_origins + custom_origins))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"https://.*\.run\.app",
+    allow_origin_regex=r"(https://.*\.run\.app|chrome-extension://.*)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

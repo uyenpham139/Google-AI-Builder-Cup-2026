@@ -1,0 +1,81 @@
+{
+  "manifest_version": 3,
+  "name": "Echo Guard - Zero-Trust Fraud Defense for Google Meet",
+  "version": "1.0.0",
+  "description": "Real-time AI voice & dialogue defense against CEO deepfakes, BEC wire fraud, and coercion inside Google Meet.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*",
+    "https://*.run.app/*"
+  ],
+  "background": {
+    "service_worker": "background/service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Echo Guard - Fraud Shield",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://meet.google.com/*",
+        "http://localhost:3001/*",
+        "http://127.0.0.1:3001/*"
+      ],
+      "js": [
+        "content/meet.js"
+      ],
+      "css": [
+        "content/meet.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*"
+      ],
+      "js": [
+        "content/treasury.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/*",
+        "content/*"
+      ],
+      "matches": [
+        "https://meet.google.com/*",
+        "http://localhost:3001/*",
+        "http://127.0.0.1:3001/*",
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*"
+      ]
+    }
+  ]
+}

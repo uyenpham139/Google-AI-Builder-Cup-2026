@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Echo Guard - Zero-Trust Shield</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Top Header -->
+    <header class="popup-header">
+      <div class="header-brand">
+        <div class="brand-shield">
+          <svg viewBox="0 0 24 24" width="16" height="16">
+            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z" fill="#10b981"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">Echo Guard</h1>
+          <p class="brand-subtitle">Zero-Trust Fraud Defense</p>
+        </div>
+      </div>
+      <div class="header-status" id="connection-pill">
+        <span class="status-dot"></span>
+        <span id="connection-text">Connecting...</span>
+      </div>
+    </header>
+
+    <!-- Main Threat Assessment Card -->
+    <section class="threat-card">
+      <div class="threat-meta">
+        <span class="meta-label">REAL-TIME THREAT LEVEL</span>
+        <span class="meta-status" id="threat-label">SAFE</span>
+      </div>
+      <div class="risk-meter-container">
+        <div class="risk-meter-bar" id="risk-meter-fill" style="width: 5%;"></div>
+      </div>
+      <div class="risk-score-row">
+        <span class="risk-score-number" id="risk-score-display">0%</span>
+        <span class="threat-status-tag" id="caep-status">CAEP RFC 9493 ARMED</span>
+      </div>
+    </section>
+
+    <!-- Active Call Integration Banner -->
+    <div class="meet-session-banner" id="meet-banner">
+      <div class="meet-icon">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+          <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+        </svg>
+      </div>
+      <div class="meet-text">
+        <div class="meet-title" id="meet-status-text">Google Meet Standby</div>
+        <div class="meet-desc" id="meet-detail-text">HUD automatically injects when you join a call</div>
+      </div>
+    </div>
+
+    <!-- Quick Hackathon Demo Triggers -->
+    <section class="demo-section">
+      <div class="section-title">ONE-CLICK DEMO EVALUATION</div>
+      <div class="action-grid">
+        <button class="btn-demo btn-attack" id="btn-sim-attack">
+          <span class="btn-icon">⚡</span>
+          <div class="btn-text">
+            <strong>Simulate CEO Wire Attack</strong>
+            <small>Deepfake impersonation ($25.6M bypass)</small>
+          </div>
+        </button>
+        <button class="btn-demo btn-benign" id="btn-sim-normal">
+          <span class="btn-icon">💬</span>
+          <div class="btn-text">
+            <strong>Simulate Benign Call</strong>
+            <small>Standard sprint discussion</small>
+          </div>
+        </button>
+      </div>
+      <button class="btn-reset" id="btn-reset-alert">
+        🔄 Clear Threat & Unlock Treasury
+      </button>
+    </section>
+
+    <!-- Deep-Link Hub -->
+    <footer class="popup-footer">
+      <a href="https://meet.google.com/new" target="_blank" class="footer-link">
+        <span>📹 Launch Meet</span>
+      </a>
+      <span class="footer-divider">•</span>
+      <a href="http://localhost:3000/transfer" target="_blank" class="footer-link">
+        <span>🏦 Treasury Portal</span>
+      </a>
+      <span class="footer-divider">•</span>
+      <button id="toggle-settings" class="footer-link-btn">
+        <span>⚙️ Settings</span>
+      </button>
+    </footer>
+
+    <!-- Expandable Settings Drawer -->
+    <div class="settings-drawer" id="settings-drawer" style="display: none;">
+      <div class="settings-group">
+        <label for="ws-url-input">WebSocket Endpoint</label>
+        <input type="text" id="ws-url-input" value="ws://localhost:8000/ws/call">
+      </div>
+      <div class="settings-actions">
+        <button id="btn-save-settings" class="btn-save">Save & Reconnect</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
