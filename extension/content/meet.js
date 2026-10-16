@@ -1,11 +1,11 @@
 /**
  * Echo Guard - Google Meet Content Script
- * Injects non-intrusive Zero-Trust HUD, monitors live Google Meet captions,
- * supports Web Speech API fallback, and displays emergency barge-in alarms.
+ * Injects non-intrusive Zero-Trust HUD, safely monitors live Google Meet captions without
+ * blocking the render thread, and displays emergency barge-in alarms.
  */
 
 (function () {
-  console.log('[Echo Guard] Injecting into Google Meet...');
+  console.log('[Echo Guard] Initializing for Google Meet...');
 
   let hudElement = null;
   let overlayElement = null;
@@ -14,12 +14,15 @@
   let lastCaptionText = '';
   let captionDebounceTimer = null;
   let audioContext = null;
+  let throttleTimer = null;
 
-  // Initialize
   function init() {
-    createHUD();
-    setupCaptionObserver();
-    listenToBackgroundMessages();
+    // Delay creation slightly so Google Meet's core DOM and WebRTC can initialize smoothly
+    setTimeout(() => {
+      createHUD();
+      setupCaptionObserver();
+      listenToBackgroundMessages();
+    }, 1200);
   }
 
   /**
@@ -43,14 +46,14 @@
           <span class="echo-hud-badge" id="echo-hud-status-badge">Secure</span>
         </div>
         <div class="echo-hud-subtitle" id="echo-hud-transcript-preview">
-          Zero-Trust Shield Active · Listening...
+          Zero-Trust Shield Active · Turn on CC ('c') or Mic
         </div>
       </div>
       <div class="echo-hud-actions">
-        <button class="echo-btn-icon" id="echo-btn-mic" title="Toggle Built-in Speech Recognition">
+        <button class="echo-btn-icon" id="echo-btn-mic" title="Toggle Built-in Speech Recognition (🎙️)">
           🎙️
         </button>
-        <button class="echo-btn-icon" id="echo-btn-sim" title="Simulate Wire Fraud Attack (Demo)">
+        <button class="echo-btn-icon" id="echo-btn-sim" title="Simulate Wire Fraud Attack (⚡ Demo)">
           ⚡
         </button>
       </div>
@@ -67,39 +70,64 @@
 
   /**
    * Observe Google Meet Live Captions via DOM MutationObserver
+   * CRITICAL: Must ignore mutations inside Echo HUD and throttle calls to prevent freezing!
    */
   function setupCaptionObserver() {
-    const observer = new MutationObserver(() => {
-      extractCaptions();
+    const observer = new MutationObserver((mutations) => {
+      // 1. Filter out mutations triggered by our own extension elements to avoid infinite loops
+      let hasExternalChanges = false;
+      for (const m of mutations) {
+        const target = m.target;
+        if (target) {
+          if (target.id === 'echo-meet-hud' || target.id === 'echo-barge-in-overlay') {
+            continue;
+          }
+          if (target.closest && (target.closest('#echo-meet-hud') || target.closest('#echo-barge-in-overlay'))) {
+            continue;
+          }
+        }
+        hasExternalChanges = true;
+        break;
+      }
+
+      if (!hasExternalChanges) return;
+
+      // 2. Throttle caption extraction so we don't block Meet's render cycle
+      if (!throttleTimer) {
+        throttleTimer = setTimeout(() => {
+          throttleTimer = null;
+          extractCaptions();
+        }, 400);
+      }
     });
 
     observer.observe(document.body, {
       childList: true,
       subtree: true,
-      characterData: true,
+      characterData: false, // Don't watch every character change globally
     });
   }
 
   /**
-   * Extract captions from Google Meet standard DOM classes
+   * Extract captions from dedicated Google Meet caption containers only
    */
   function extractCaptions() {
-    // Selectors for Google Meet closed captions containers
+    // Specific selectors for actual Google Meet closed caption streams
     const captionSelectors = [
-      'div[jscontroller="D1tHje"]',
-      'div[jsname="YSxPC"]',
-      '.bh44bd',
-      '.iTTPOb',
-      '.VfPpkd-Bz112c-LgbsSe',
-      'div[aria-live="polite"]'
+      'div[jsname="YSxPC"]',       // Google Meet standard subtitle bubble
+      'div[jscontroller="D1tHje"]', // Google Meet live caption wrapper
+      '.bh44bd',                   // Classic Meet subtitle container
+      '.iTTPOb',                   // Modern Meet subtitle text
+      '.nMHg5'                     // Speaker caption container
     ];
 
     for (const selector of captionSelectors) {
       const elements = document.querySelectorAll(selector);
       if (elements && elements.length > 0) {
         elements.forEach((el) => {
-          const rawText = el.innerText || el.textContent;
-          if (rawText && rawText.trim().length > 5) {
+          // Use textContent (NEVER innerText) to avoid forced synchronous layout reflow!
+          const rawText = el.textContent;
+          if (rawText && rawText.trim().length > 6) {
             handleNewCaption(rawText.trim());
           }
         });
@@ -112,7 +140,7 @@
    */
   function handleNewCaption(text, speaker = 'Google Meet Participant') {
     if (text === lastCaptionText) return;
-    if (text.startsWith(lastCaptionText) && text.length - lastCaptionText.length < 8) return;
+    if (text.startsWith(lastCaptionText) && text.length - lastCaptionText.length < 5) return;
 
     lastCaptionText = text;
     updateSubtitlePreview(text);
@@ -125,7 +153,7 @@
         text: text,
         speaker: speaker,
       });
-    }, 600);
+    }, 700);
   }
 
   /**
@@ -142,8 +170,9 @@
     if (isVoiceRecognitionActive && speechRecognizer) {
       speechRecognizer.stop();
       isVoiceRecognitionActive = false;
-      document.getElementById('echo-btn-mic').style.color = '#94a3b8';
-      updateSubtitlePreview('Voice Recognition Paused');
+      const btn = document.getElementById('echo-btn-mic');
+      if (btn) btn.style.color = '#94a3b8';
+      updateSubtitlePreview('Voice Shield Paused · Turn on CC (\'c\')');
       return;
     }
 
@@ -155,8 +184,9 @@
 
       speechRecognizer.onstart = () => {
         isVoiceRecognitionActive = true;
-        document.getElementById('echo-btn-mic').style.color = '#10b981';
-        updateSubtitlePreview('Voice Recognition Active · Speak freely');
+        const btn = document.getElementById('echo-btn-mic');
+        if (btn) btn.style.color = '#10b981';
+        updateSubtitlePreview('Voice Shield Active · Listening to your microphone');
       };
 
       speechRecognizer.onresult = (event) => {
@@ -178,7 +208,7 @@
           try {
             speechRecognizer.start();
           } catch (e) {
-            console.debug('[Echo Meet] Speech restart:', e);
+            console.debug('[Echo Meet] Speech restart notice:', e);
           }
         }
       };
@@ -190,7 +220,7 @@
   }
 
   /**
-   * Update HUD Subtitle Preview Text
+   * Update HUD Subtitle Preview Text safely
    */
   function updateSubtitlePreview(text) {
     const preview = document.getElementById('echo-hud-transcript-preview');
@@ -271,7 +301,7 @@
         utterance.pitch = 1.0;
         window.speechSynthesis.speak(utterance);
       } catch (e) {
-        console.debug('[Echo Meet] Speech synthesis warning notice:', e);
+        console.debug('[Echo Meet] Speech warning notice:', e);
       }
     }
   }
@@ -396,7 +426,7 @@
     });
   }
 
-  // Start initialization
+  // Start initialization smoothly
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
