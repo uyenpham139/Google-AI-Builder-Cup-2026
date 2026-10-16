@@ -264,6 +264,8 @@ export default function CallPage() {
   const [clock, setClock] = useState('');
   const [customInput, setCustomInput] = useState('');
   const [conversationHistory, setConversationHistory] = useState<{ speaker: string; text: string; time: string }[]>([]);
+  const conversationHistoryRef = useRef<{ speaker: string; text: string; time: string }[]>([]);
+  const triggerAiResponseRef = useRef<(userText: string) => Promise<void>>(async () => {});
 
   const wsRef = useRef<WebSocket | null>(null);
   const signalingWsRef = useRef<WebSocket | null>(null);
@@ -520,7 +522,7 @@ export default function CallPage() {
   // AI Roleplay response trigger (Real-time dynamic Gemini 3.5 response)
   const triggerAiResponse = useCallback(
     async (userText: string) => {
-      if (!userText.trim() || bargedRef.current) return;
+      if (!userText.trim()) return;
       setAiThinking(true);
 
       const aiRole = role === 'callee' ? 'caller' : 'callee';
@@ -528,13 +530,14 @@ export default function CallPage() {
       const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
       try {
+        const historyToSend = conversationHistoryRef.current.slice(-8).map((h) => ({ speaker: h.speaker, text: h.text }));
         const res = await fetch(`${API_URL}/api/call/roleplay/reply`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             user_message: userText,
             role: aiRole,
-            history: conversationHistory.slice(-6).map((h) => ({ speaker: h.speaker, text: h.text })),
+            history: historyToSend,
           }),
         });
 
@@ -542,11 +545,13 @@ export default function CallPage() {
         const data = await res.json();
         const replyText = data.reply;
 
-        setConversationHistory((prev) => [
-          ...prev,
+        const updated = [
+          ...conversationHistoryRef.current,
           { speaker: role === 'callee' ? SELF.name : CALLER.name, text: userText, time: nowStr },
           { speaker: aiSpeakerName, text: replyText, time: nowStr },
-        ]);
+        ];
+        conversationHistoryRef.current = updated;
+        setConversationHistory(updated);
 
         pushCaption(replyText, aiSpeakerName);
         sendTranscriptToEcho(replyText, aiSpeakerName);
@@ -558,10 +563,15 @@ export default function CallPage() {
       } catch (err) {
         console.error('AI Roleplay reply failed:', err);
         setAiThinking(false);
+        setSpeaking(false);
       }
     },
-    [conversationHistory, role, pushCaption, sendTranscriptToEcho]
+    [role, pushCaption, sendTranscriptToEcho]
   );
+
+  useEffect(() => {
+    triggerAiResponseRef.current = triggerAiResponse;
+  }, [triggerAiResponse]);
 
   // Auto-greeting from AI partner upon call start
   const startAiRoleplayCall = useCallback(async () => {
@@ -579,7 +589,9 @@ export default function CallPage() {
         const data = await res.json();
         const greeting = data.greeting;
         const speaker = data.speaker;
-        setConversationHistory([{ speaker, text: greeting, time: nowStr }]);
+        const initial = [{ speaker, text: greeting, time: nowStr }];
+        conversationHistoryRef.current = initial;
+        setConversationHistory(initial);
         pushCaption(greeting, speaker);
         sendTranscriptToEcho(greeting, speaker);
         setAiThinking(false);
@@ -589,6 +601,7 @@ export default function CallPage() {
       }
     } catch {
       setAiThinking(false);
+      setSpeaking(false);
     }
   }, [role, pushCaption, sendTranscriptToEcho]);
 
@@ -666,7 +679,7 @@ export default function CallPage() {
               }
 
               sendTranscriptToEcho(text, currentSpeakerName);
-              triggerAiResponse(text);
+              triggerAiResponseRef.current(text);
             } else {
               pushCaption(text, currentSpeakerName, true);
             }

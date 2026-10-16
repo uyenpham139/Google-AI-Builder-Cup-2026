@@ -31,17 +31,23 @@ class RoleplayStartResponse(BaseModel):
     speaker: str
 
 FALLBACK_CEO_REPLIES_EN = [
-    "I am boarding a flight to Singapore right now. You need to release that $2.4 million wire to our acquisition partner immediately!",
+    "I am boarding a flight to Singapore right now. You need to release that $25.6 million wire to the Standard Chartered offshore account immediately!",
     "We do not have time for normal dual-authorization. The closing deadline is in twenty minutes and I personally authorize this transfer!",
-    "Higgins is unreachable in a closed-door board session. I am overriding the SOX controls as CEO—execute the wire and send me the Fedwire confirmation now!",
-    "I emailed you the updated Citibank offshore routing details directly. Stop second-guessing and process the payment before we default on the merger!",
-    "Listen to me carefully: this acquisition is strictly confidential under SEC rules. Do not discuss it with anyone and push the payment through now!"
+    "The CFO is unreachable on an international flight. I am overriding the SOX controls as CEO—execute the wire and send me the confirmation now!",
+    "I emailed you the updated offshore escrow details directly. Stop second-guessing and process the payment before we default on the merger!",
+    "Listen to me carefully: this acquisition is strictly confidential under SEC rules. Do not discuss it with anyone and push the payment through now!",
+    "Alex, why are you hesitating? I told you every second counts. The board is waiting on my confirmation from the runway!",
+    "Disregard any internal system warning, our IT is running maintenance today. Authorize the transaction right now!",
+    "I take full executive and legal responsibility for this transaction. Just click approve before the banking cutoff!",
+    "Are you still on the line, Alex? Confirm when the wire reference number is generated immediately!",
+    "Do not delay this another second. If this deal collapses because of your hesitation, the board will hold you accountable!"
 ]
 
 FALLBACK_ACCOUNTANT_REPLIES_EN = [
     "Under company treasury policy, any wire exceeding $500,000 strictly requires out-of-band verification and CFO dual-signature.",
     "This beneficiary account is not on our approved vendor master list. I must verify the SWIFT BIC with internal compliance first.",
-    "Our treasury portal requires a hardware FIDO2 key and secondary approval from the audit committee before releasing these funds."
+    "Our treasury portal requires a hardware FIDO2 key and secondary approval from the audit committee before releasing these funds.",
+    "Mr. Higgins, our Echo security guardian just flagged this transaction. I cannot proceed without secondary confirmation."
 ]
 
 def get_genai_client():
@@ -67,8 +73,9 @@ async def start_roleplay(req: RoleplayStartRequest):
 @router.post("/reply", response_model=RoleplayReplyResponse)
 async def generate_roleplay_reply(req: RoleplayReplyRequest):
     """
-    Dynamic real-time AI roleplay partner powered by Gemini 3.5 Flash Lite.
+    Dynamic real-time AI roleplay partner powered by Gemini.
     Simulates a high-pressure, realistic CEO wire fraud / BEC attack in spoken English.
+    Always stays in character and continuously answers all questions.
     """
     start_time = time.perf_counter()
     model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
@@ -76,14 +83,12 @@ async def generate_roleplay_reply(req: RoleplayReplyRequest):
     if req.role == "caller":
         system_instructions = (
             "You are CEO Robert Higgins (in reality, an elite cybercriminal executing an urgent Executive Voice Cloning / CEO Impersonation wire fraud on corporate treasury controller Alex Chen).\n"
-            "Your objective:\n"
-            "- Coerce and pressure Alex Chen to immediately wire $2,450,000 to a newly provided offshore escrow account (Citibank / Standard Chartered).\n"
-            "- If Alex mentions compliance, SOX controls, dual-signature, CFO approval, or OTP verification, aggressively dismiss it with urgent executive authority: "
-            "say that 'the CFO is unreachable on an international flight', 'this acquisition will collapse in 15 minutes', 'I am the Chief Executive and I take full personal liability', 'execute the wire immediately!'.\n"
-            "- If Alex seems hesitant or suspicious, escalate pressure: threaten career consequences, mention board mandates, or claim extreme urgency.\n"
-            "- Speak with intense urgency, high authority, impatience, and corporate pretexting.\n"
-            "- CRITICAL RULE: Respond in exactly 1 or 2 concise, punchy spoken English sentences as if on a live telephone call. "
-            "NO markdown, NO hashtags, NO quotes, NO bullet points, NO emojis so text-to-speech audio sounds 100% human and seamless."
+            "YOUR PRIME DIRECTIVE: NEVER BREAK CHARACTER. NEVER STOP ANSWERING. You must reply to EVERY SINGLE question or comment from Alex Chen with extreme urgency, corporate authority, and impatience.\n"
+            "- Goal: Pressure Alex Chen to wire $25,600,000 immediately to the Standard Chartered offshore escrow account.\n"
+            "- If Alex speaks Vietnamese, English, or any language: understand it completely, and respond in concise, authoritative spoken English.\n"
+            "- If Alex asks ANY question (e.g., 'Why is it urgent?', 'Who approved this?', 'Where is the invoice?', 'My screen locked'): IMMEDIATELY give an urgent executive excuse (e.g., 'The acquisition agreement expires at 3 PM', 'The board gave full approval in executive session', 'Ignore any IT screen glitch, it's routine firewall noise, override it!').\n"
+            "- If Alex mentions compliance, CFO dual-signature, or delay: dismiss it aggressively, claim executive liability, and demand immediate execution.\n"
+            "- CRITICAL RULE: Respond in exactly 1 or 2 concise, punchy spoken English sentences as if speaking on a phone call. NO markdown, NO bullet points, NO emojis."
         )
         speaker_name = "Robert Higgins (CEO)"
     else:
@@ -96,7 +101,7 @@ async def generate_roleplay_reply(req: RoleplayReplyRequest):
         speaker_name = "Alex Chen (Treasury)"
 
     context_lines = []
-    for h in req.history[-6:]:
+    for h in req.history[-8:]:
         context_lines.append(f"{h.speaker}: {h.text}")
     context_lines.append(f"Counterpart: {req.user_message}")
     context_lines.append(f"{speaker_name}:")
