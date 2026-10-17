@@ -158,5 +158,11 @@ class GeminiGateway:
 
 
 @lru_cache(maxsize=1)
-def get_gemini_gateway() -> GeminiGateway:
-    return GeminiGateway()
+def get_gemini_gateway():
+    mode = os.getenv("GEMINI_API_MODE", "standard").strip().lower()
+    if mode == "live":
+        from app.services.gemini_live.gateway import GeminiLiveGateway
+        return GeminiLiveGateway()
+    if mode == "standard":
+        return GeminiGateway()
+    raise ValueError("GEMINI_API_MODE must be 'standard' or 'live'")

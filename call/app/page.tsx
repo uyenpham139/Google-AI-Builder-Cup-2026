@@ -1604,7 +1604,7 @@ export default function CallPage() {
                     Solo with AI
                   </div>
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    Live simulation with Gemini 3.5 executing an executive wire fraud attempt.
+                    Live AI simulation of an executive wire fraud attempt.
                   </p>
                 </div>
                 <div className="mt-4 pt-2.5 border-t border-white/5 text-xs font-medium text-purple-300">

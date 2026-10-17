@@ -1,6 +1,43 @@
 # Gemini availability during calls
 
-The call simulator and coercion analysis share a Gemini gateway. It tries the
+The call simulator and coercion analysis share a Gemini gateway. Set
+`GEMINI_API_MODE=live` in `backend/.env` to use `gemini-3.8-live` over the Live
+WebSocket API. This is the mode in `.env.example`. Omitting the variable retains
+the existing `standard` mode for compatibility. Restart the backend after changes.
+
+## Live transport
+
+In Live mode, both call replies and coercion analysis use `GEMINI_LIVE_MODEL`,
+currently supported as `gemini-3.8-live`. The adapter sends the existing text
+conversation to a fresh Live session for each request. Replies use Google's
+output audio transcription; the call app keeps its existing speech synthesis.
+This adapter does not change microphone capture or stream native Gemini audio
+to the browser.
+
+Gemini 3.8 Live supports function calling but not structured JSON output mode.
+Analysis therefore requests a `report_risk` function call and validates its
+arguments against the existing coercion evaluation schema. Missing tools,
+unexpected tool names, malformed arguments, and spoken JSON all fall back to
+local protection. A valid report is acknowledged and the session is closed.
+
+At most two sessions run concurrently per backend process. Queue time, setup,
+generation, and acknowledgement share the feature's deadline. Provider failures
+start a shared 30-second cooldown (or Google's longer retry hint), with no
+automatic retry or switch to standard models. A timeout while waiting for a
+local slot does not start provider cooldown. Disconnect cancellation closes the
+session. The same source metadata and local/scripted fallback behavior below
+apply to both transports.
+
+The Translate and Transcribe models specialize in translation and speech-to-text;
+they cannot replace the call's general dialogue and fraud evaluator. Extended
+Thinking uses a different interaction lifecycle and is not supported by this
+adapter. See [Gemini 3.8 Live](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live).
+An AI Studio quota column marked Unlimited does not remove other project/model
+limits. See [Google's rate limits](https://ai.google.dev/gemini-api/docs/rate-limits).
+
+## Standard transport
+
+With `GEMINI_API_MODE=standard`, the gateway tries the
 configured primary model, then the ordered alternatives in
 `GEMINI_FALLBACK_MODELS`. Duplicate model names are removed. A failed model is
 skipped for 30 seconds across both features. After cooldown, one request probes
@@ -19,8 +56,10 @@ All attempts and backoff share a total deadline:
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Primary model |
-| `GEMINI_FALLBACK_MODELS` | `gemini-3.8-flash` | Comma-separated alternatives |
+| `GEMINI_API_MODE` | `standard` when omitted | `live` or `standard` transport |
+| `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Live model for call replies and analysis |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Standard primary model |
+| `GEMINI_FALLBACK_MODELS` | `gemini-3.8-flash` | Standard comma-separated alternatives |
 | `GEMINI_ANALYSIS_TIMEOUT_SECONDS` | `20` | Background coercion analysis |
 | `GEMINI_ROLEPLAY_TIMEOUT_SECONDS` | `16` | Conversational replies |
 
@@ -86,10 +125,11 @@ are not returned in fallback metadata.
 From `backend`, the isolated resilience checks require no live API calls:
 
 ```sh
-python -m pytest tests/test_gemini_gateway.py tests/test_coercion_agent.py tests/test_call_fallback_status.py tests/test_call_analysis_worker.py -q
+python -m pytest tests/test_gemini_gateway.py tests/test_gemini_live_gateway.py tests/test_coercion_agent.py tests/test_call_fallback_status.py tests/test_call_analysis_worker.py -q
 ```
 
 These cover failover order, bounded retries, shared cooldown, recovery probes,
 request deadlines and cancellation, invalid output, and honest HTTP/WebSocket
-source metadata. Live model availability still depends on Google and the
+source metadata. Live transport checks also cover function argument validation,
+audio transcription replies, session limits, and queued deadlines. Model availability still depends on Google and the
 project's API quota. See [Google's troubleshooting guidance](https://ai.google.dev/gemini-api/docs/troubleshooting).
