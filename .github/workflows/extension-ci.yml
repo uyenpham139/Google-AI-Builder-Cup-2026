@@ -1,0 +1,41 @@
+name: Extension checks
+
+on:
+  pull_request:
+    branches: [main, Staging]
+    paths:
+      - 'extension/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/extension-ci.yml'
+  push:
+    branches: [main, Staging]
+    paths:
+      - 'extension/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/extension-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:extension
+      - name: Check extension syntax
+        run: |
+          node --check --input-type=module < extension/background/service_worker.js
+          node --check extension/background/socket_channel.mjs
+          node --check extension/content/meet.js
+          node --check extension/content/treasury.js
+          node --check extension/popup/popup.js
+          node --check extension/tests/browser.cjs

@@ -8,12 +8,15 @@
     "build:frontend": "pnpm --filter frontend build",
     "dev:call": "pnpm --filter call dev",
     "build:call": "pnpm --filter call build",
+    "test:extension": "node --test extension/tests/socket_channel.test.mjs extension/tests/worker.test.mjs",
+    "test:extension:browser": "node extension/tests/browser.cjs",
     "prepare": "husky"
   },
   "packageManager": "pnpm@10.33.2",
   "devDependencies": {
     "husky": "^9.1.7",
-    "lint-staged": "^17.5.1"
+    "lint-staged": "^17.5.1",
+    "playwright": "1.64.1"
   },
   "lint-staged": {
     "frontend/**/*.{js,jsx,ts,tsx}": [

@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "116",
   "name": "Echo Guard - Zero-Trust Fraud Defense for Google Meet",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Real-time AI voice & dialogue defense against CEO deepfakes, BEC wire fraud, and coercion inside Google Meet.",
   "icons": {
     "16": "icons/icon16.png",
@@ -11,6 +12,7 @@
   },
   "permissions": [
     "storage",
+    "alarms",
     "activeTab",
     "tabs",
     "notifications"

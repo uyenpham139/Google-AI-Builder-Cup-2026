@@ -15,6 +15,8 @@
   let captionDebounceTimer = null;
   let audioContext = null;
   let throttleTimer = null;
+  const captionSelector = 'div[jsname="YSxPC"], div[jscontroller="D1tHje"], .bh44bd, .iTTPOb, .nMHg5';
+  const captionObservers = new Map();
 
   function init() {
     // Delay creation slightly so Google Meet's core DOM and WebRTC can initialize smoothly
@@ -22,6 +24,7 @@
       createHUD();
       setupCaptionObserver();
       listenToBackgroundMessages();
+      chrome.runtime.sendMessage({ type: 'GET_STATUS' }).then(applyStatus).catch(() => updateHUDState('OFFLINE'));
     }, 1200);
   }
 
@@ -43,10 +46,10 @@
       <div class="echo-hud-content">
         <div class="echo-hud-title">
           <span>Echo Guard</span>
-          <span class="echo-hud-badge" id="echo-hud-status-badge">Secure</span>
+          <span class="echo-hud-badge" id="echo-hud-status-badge">Connecting</span>
         </div>
         <div class="echo-hud-subtitle" id="echo-hud-transcript-preview">
-          Zero-Trust Shield Active · Turn on CC ('c') or Mic
+          Checking monitoring connection · Turn on CC ('c') or Mic
         </div>
       </div>
       <div class="echo-hud-actions">
@@ -73,11 +76,29 @@
    * CRITICAL: Must ignore mutations inside Echo HUD and throttle calls to prevent freezing!
    */
   function setupCaptionObserver() {
+    function scheduleExtraction() {
+      if (throttleTimer) return;
+      throttleTimer = setTimeout(() => {
+        throttleTimer = null;
+        // Observe text edits only inside real caption roots. The body observer
+        // discovers new roots without watching every text edit across Meet.
+        for (const [node, observer] of captionObservers) {
+          if (!node.isConnected) { observer.disconnect(); captionObservers.delete(node); }
+        }
+        for (const node of document.querySelectorAll(captionSelector)) {
+          if (captionObservers.has(node)) continue;
+          const observer = new MutationObserver(scheduleExtraction);
+          observer.observe(node, { childList: true, subtree: true, characterData: true });
+          captionObservers.set(node, observer);
+        }
+        extractCaptions();
+      }, 400);
+    }
     const observer = new MutationObserver((mutations) => {
       // 1. Filter out mutations triggered by our own extension elements to avoid infinite loops
       let hasExternalChanges = false;
       for (const m of mutations) {
-        const target = m.target;
+        const target = m.target.nodeType === Node.ELEMENT_NODE ? m.target : m.target.parentElement;
         if (target) {
           if (target.id === 'echo-meet-hud' || target.id === 'echo-barge-in-overlay') {
             continue;
@@ -93,12 +114,7 @@
       if (!hasExternalChanges) return;
 
       // 2. Throttle caption extraction so we don't block Meet's render cycle
-      if (!throttleTimer) {
-        throttleTimer = setTimeout(() => {
-          throttleTimer = null;
-          extractCaptions();
-        }, 400);
-      }
+      scheduleExtraction();
     });
 
     observer.observe(document.body, {
@@ -106,6 +122,7 @@
       subtree: true,
       characterData: false, // Don't watch every character change globally
     });
+    scheduleExtraction();
   }
 
   /**
@@ -113,24 +130,12 @@
    */
   function extractCaptions() {
     // Specific selectors for actual Google Meet closed caption streams
-    const captionSelectors = [
-      'div[jsname="YSxPC"]',       // Google Meet standard subtitle bubble
-      'div[jscontroller="D1tHje"]', // Google Meet live caption wrapper
-      '.bh44bd',                   // Classic Meet subtitle container
-      '.iTTPOb',                   // Modern Meet subtitle text
-      '.nMHg5'                     // Speaker caption container
-    ];
-
-    for (const selector of captionSelectors) {
-      const elements = document.querySelectorAll(selector);
-      if (elements && elements.length > 0) {
-        elements.forEach((el) => {
-          // Use textContent (NEVER innerText) to avoid forced synchronous layout reflow!
-          const rawText = el.textContent;
-          if (rawText && rawText.trim().length > 6) {
-            handleNewCaption(rawText.trim());
-          }
-        });
+    const seen = new Set();
+    for (const el of captionObservers.keys()) {
+      const text = el.textContent.trim();
+      if (text.length > 6 && !seen.has(text)) {
+        seen.add(text);
+        handleNewCaption(text);
       }
     }
   }
@@ -238,7 +243,13 @@
     const pulse = document.getElementById('echo-hud-pulse-dot');
     if (!badge || !pulse) return;
 
-    if (status === 'ALERT' || score >= 0.85) {
+    if (status === 'OFFLINE' || status === 'CONNECTING') {
+      badge.textContent = status;
+      badge.style.background = 'rgba(100, 116, 139, 0.25)';
+      badge.style.color = '#cbd5e1';
+      pulse.style.background = '#94a3b8';
+      pulse.style.boxShadow = 'none';
+    } else if (status === 'ALERT' || score >= 0.85) {
       badge.textContent = `ALERT ${Math.round(score * 100)}%`;
       badge.style.background = 'rgba(239, 68, 68, 0.25)';
       badge.style.color = '#f87171';
@@ -367,7 +378,7 @@
 
         <div class="echo-overlay-actions">
           <button class="echo-btn-secondary" id="echo-btn-dismiss">
-            Dismiss as False Positive
+            Dismiss call alert
           </button>
           <button class="echo-btn-primary" id="echo-btn-open-treasury">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -388,7 +399,6 @@
         type: 'DISMISS_ALERT',
         reason: 'Meeting host cleared alarm as false positive',
       });
-      dismissEmergencyOverlay();
     });
 
     document.getElementById('echo-btn-open-treasury').addEventListener('click', () => {
@@ -400,7 +410,14 @@
     const el = document.getElementById('echo-barge-in-overlay');
     if (el) el.remove();
     updateHUDState('NORMAL', 0);
-    updateSubtitlePreview('Alarm Cleared · Zero-Trust Active');
+    updateSubtitlePreview('Call alert cleared · Bank release requires verification in Treasury');
+  }
+
+  function applyStatus(status) {
+    if (status.lastAlert) { showEmergencyOverlay(status.lastAlert); return; }
+    if (document.getElementById('echo-barge-in-overlay')) dismissEmergencyOverlay();
+    updateHUDState(status.connectionStatus === 'connected' ? 'NORMAL'
+      : status.connectionStatus === 'connecting' ? 'CONNECTING' : 'OFFLINE', status.currentRiskScore || 0);
   }
 
   /**
@@ -413,7 +430,7 @@
       if (message.type === 'ECHO_SECURITY_ALERT') {
         showEmergencyOverlay(message.alert);
         sendResponse({ received: true });
-      } else if (message.type === 'ECHO_RISK_UPDATE') {
+      } else if (message.type === 'ECHO_RISK_UPDATE' && !document.getElementById('echo-barge-in-overlay')) {
         updateHUDState(message.status, message.risk_score);
         sendResponse({ received: true });
       } else if (message.type === 'ECHO_ALERT_DISMISSED') {
@@ -421,6 +438,9 @@
         sendResponse({ received: true });
       } else if (message.type === 'ECHO_MOCK_CAPTION') {
         updateSubtitlePreview(`${message.speaker}: "${message.text}"`);
+        sendResponse({ received: true });
+      } else if (message.type === 'ECHO_STATUS_UPDATE') {
+        applyStatus(message.status);
         sendResponse({ received: true });
       }
     });

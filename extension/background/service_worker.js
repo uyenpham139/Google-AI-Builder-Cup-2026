@@ -1,381 +1,200 @@
-/**
- * Echo Guard - Background Service Worker (Manifest V3)
- * Manages persistent Zero-Trust WebSocket connection, relays live Google Meet transcripts,
- * and orchestrates cross-tab emergency barge-in alarms and Treasury locking (CAEP RFC 9493).
- */
+/** Echo Guard's call channel and authoritative treasury lock subscription. */
+import { SocketChannel } from './socket_channel.mjs';
 
 const DEFAULT_CONFIG = {
   wsUrl: 'ws://localhost:8000/ws/call',
-  apiUrl: 'http://localhost:8000',
   monitoringActive: true,
   audioAlertsEnabled: true,
   autoLockTreasury: true,
 };
-
-let socket = null;
-let reconnectTimer = null;
-let connectionStatus = 'disconnected'; // 'disconnected' | 'connecting' | 'connected' | 'error'
+const CALL_TABS = ['https://meet.google.com/*', 'http://localhost:3001/*', 'http://127.0.0.1:3001/*'];
+const BANK_TABS = ['http://localhost:3000/*', 'http://127.0.0.1:3000/*'];
+const RECONNECT_ALARM = 'echo-connection-check';
+let config = DEFAULT_CONFIG;
 let activeSessionId = null;
-let currentRiskScore = 0.0;
+let currentRiskScore = 0;
 let lastAlert = null;
 let transcriptHistory = [];
+let treasuryLocked = null;
+let treasuryReason = '';
+let restoredAlert = false;
 
-// Initialize configuration from storage
-chrome.runtime.onInstalled.addListener(async () => {
-  const stored = await chrome.storage.local.get(['echoConfig']);
-  if (!stored.echoConfig) {
-    await chrome.storage.local.set({ echoConfig: DEFAULT_CONFIG });
-  }
-  updateBadge('OFF', '#6B7280');
-  connectWebSocket();
-});
-
-// Re-establish connection on browser start
-chrome.runtime.onStartup.addListener(() => {
-  connectWebSocket();
-});
-
-async function getConfig() {
-  const data = await chrome.storage.local.get(['echoConfig']);
-  return { ...DEFAULT_CONFIG, ...(data.echoConfig || {}) };
+function updateBadge() {
+  const state = callChannel.state;
+  const [text, color] = lastAlert ? ['ALERT', '#DC2626']
+    : state === 'connected' ? [currentRiskScore >= 0.6 ? 'WARN' : 'ON', '#10B981']
+      : state === 'connecting' ? ['...', '#3B82F6'] : ['OFF', '#6B7280'];
+  chrome.action.setBadgeText({ text });
+  chrome.action.setBadgeBackgroundColor({ color });
 }
 
-function updateBadge(text, color) {
-  try {
-    chrome.action.setBadgeText({ text: text || '' });
-    if (color) {
-      chrome.action.setBadgeBackgroundColor({ color });
-    }
-  } catch (err) {
-    console.debug('[Echo BG] Badge update notice:', err);
-  }
+function status() {
+  return {
+    connectionStatus: callChannel.state, currentRiskScore, activeSessionId, lastAlert,
+    transcriptCount: transcriptHistory.length, history: transcriptHistory.slice(-5),
+    treasuryConnectionStatus: treasuryChannel.state, treasuryLocked, treasuryReason,
+    treasuryBannerEnabled: config.autoLockTreasury,
+  };
 }
 
-/**
- * Connect to Echo Backend WebSocket
- */
-async function connectWebSocket() {
-  const config = await getConfig();
-  if (!config.monitoringActive) {
-    if (socket) {
-      socket.close();
-      socket = null;
-    }
-    connectionStatus = 'disconnected';
-    updateBadge('OFF', '#6B7280');
-    broadcastStatus();
-    return;
-  }
-
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-    return;
-  }
-
-  connectionStatus = 'connecting';
-  updateBadge('...', '#3B82F6');
-  broadcastStatus();
-
-  try {
-    console.log(`[Echo BG] Connecting to ${config.wsUrl}...`);
-    socket = new WebSocket(config.wsUrl);
-
-    socket.onopen = () => {
-      console.log('[Echo BG] Connected to Echo Multi-Agent Security Engine');
-      connectionStatus = 'connected';
-      updateBadge('ON', '#10B981');
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      broadcastStatus();
-    };
-
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handleBackendMessage(data);
-      } catch (err) {
-        console.error('[Echo BG] Failed to parse backend message:', err, event.data);
-      }
-    };
-
-    socket.onerror = (err) => {
-      console.warn('[Echo BG] WebSocket error:', err);
-      connectionStatus = 'error';
-      updateBadge('ERR', '#EF4444');
-      broadcastStatus();
-    };
-
-    socket.onclose = () => {
-      console.log('[Echo BG] WebSocket connection closed. Scheduling reconnect...');
-      connectionStatus = 'disconnected';
-      updateBadge('OFF', '#6B7280');
-      socket = null;
-      broadcastStatus();
-
-      // Exponential reconnect
-      if (!reconnectTimer) {
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          connectWebSocket();
-        }, 3000);
-      }
-    };
-  } catch (err) {
-    console.error('[Echo BG] Failed to initialize WebSocket:', err);
-    connectionStatus = 'error';
-    updateBadge('ERR', '#EF4444');
-    broadcastStatus();
-  }
+async function notifyTabs(message, patterns) {
+  const tabs = await chrome.tabs.query({ url: patterns });
+  await Promise.all(tabs.filter(tab => tab.id).map(tab => chrome.tabs.sendMessage(tab.id, message).catch(() => {})));
 }
 
-/**
- * Dispatch and handle messages received from backend
- */
-async function handleBackendMessage(data) {
-  console.log('[Echo BG] Inbound message:', data);
+function broadcastStatus() {
+  updateBadge();
+  const message = { type: 'ECHO_STATUS_UPDATE', status: status() };
+  chrome.runtime.sendMessage(message).catch(() => {});
+  notifyTabs(message, CALL_TABS).catch(() => {});
+  notifyTabs(message, BANK_TABS).catch(() => {});
+}
 
-  if (data.session_id) {
-    activeSessionId = data.session_id;
-  }
+function persistState() {
+  // Session storage survives worker suspension, without retaining transcripts on disk.
+  return chrome.storage.session.set({ echoRuntime: { currentRiskScore, lastAlert, transcriptHistory } });
+}
 
-  // Handle Security Alerts & Risk Updates
+async function clearCallAlert() {
+  lastAlert = null;
+  currentRiskScore = 0;
+  restoredAlert = false;
+  await persistState();
+  await notifyTabs({ type: 'ECHO_ALERT_DISMISSED' }, CALL_TABS);
+}
+
+async function handleCallMessage(data) {
+  if (data.session_id) activeSessionId = data.session_id;
   if (data.type === 'SECURITY_ALERT' || data.type === 'RISK_UPDATE') {
     currentRiskScore = data.risk_score ?? currentRiskScore;
-    const isCritical = data.action === 'TRIGGER_BARGE_IN_AND_LOCK' || currentRiskScore >= 0.85;
-
-    if (isCritical) {
-      lastAlert = {
-        ...data,
-        timestamp: Date.now(),
-      };
-      await chrome.storage.local.set({ lastAlert });
-
-      updateBadge('ALERT', '#DC2626');
-
-      // 1. Notify all Google Meet tabs to render Emergency Barge-In Overlay
-      notifyTabs({
-        type: 'ECHO_SECURITY_ALERT',
-        alert: lastAlert,
-      }, 'https://meet.google.com/*');
-
-      // 2. Cross-tab Zero-Trust: Freeze Treasury banking tabs
-      const config = await getConfig();
-      if (config.autoLockTreasury) {
-        notifyTabs({
-          type: 'ECHO_FREEZE_TREASURY',
-          reason: `Echo Guard intercepted BEC coercion (Risk: ${Math.round(currentRiskScore * 100)}%)`,
-          alert: lastAlert,
-        }, ['http://localhost:3000/*', 'http://127.0.0.1:3000/*']);
-      }
-
-      // 3. Native Chrome Notification
-      try {
-        chrome.notifications.create(`echo-alert-${Date.now()}`, {
-          type: 'basic',
-          iconUrl: 'icons/icon128.png',
-          title: '🚨 Echo Guard: BEC Coercion Intercepted!',
-          message: `Critical threat detected in Google Meet! Corporate Treasury API locked via CAEP RFC 9493.`,
-          priority: 2,
-        });
-      } catch (nErr) {
-        console.debug('[Echo BG] Notification suppressed:', nErr);
-      }
+    if (data.action === 'TRIGGER_BARGE_IN_AND_LOCK' || currentRiskScore >= 0.85) {
+      lastAlert = { ...data, timestamp: Date.now() };
+      restoredAlert = false;
+      await persistState();
+      await notifyTabs({ type: 'ECHO_SECURITY_ALERT', alert: lastAlert }, CALL_TABS);
+      chrome.notifications.create(`echo-alert-${Date.now()}`, {
+        type: 'basic', iconUrl: 'icons/icon128.png', title: 'Echo Guard: Coercion detected',
+        message: 'Review the call alert and verify the treasury transaction.', priority: 2,
+      }).catch(() => {});
     } else {
-      // Normal or Suspicious update
-      if (currentRiskScore >= 0.6) {
-        updateBadge('WARN', '#F59E0B');
-      } else {
-        updateBadge('SEC', '#10B981');
-      }
-
-      notifyTabs({
-        type: 'ECHO_RISK_UPDATE',
-        risk_score: currentRiskScore,
-        status: data.status,
-        action: data.action,
-      }, 'https://meet.google.com/*');
+      await persistState();
+      await notifyTabs({ type: 'ECHO_RISK_UPDATE', risk_score: currentRiskScore, status: data.status }, CALL_TABS);
     }
   } else if (data.type === 'ALERT_DISMISSED') {
-    lastAlert = null;
-    currentRiskScore = 0.0;
-    await chrome.storage.local.remove(['lastAlert']);
-    updateBadge('ON', '#10B981');
-
-    notifyTabs({
-      type: 'ECHO_ALERT_DISMISSED',
-    }, 'https://meet.google.com/*');
-
-    notifyTabs({
-      type: 'ECHO_UNLOCK_TREASURY',
-    }, ['http://localhost:3000/*', 'http://127.0.0.1:3000/*']);
+    await clearCallAlert();
+    // A call dismissal is not bank operator verification. Only the ERP channel
+    // can confirm an unlock; keep the bank banner and popup lock status intact.
   }
+  if (data.type !== 'pong') broadcastStatus();
+}
 
+async function handleTreasuryMessage(data) {
+  if (data.type === 'LOCK_SESSION' || data.type === 'SYNC_STATUS') {
+    const wasLocked = treasuryLocked;
+    treasuryLocked = data.type === 'LOCK_SESSION' || Boolean(data.isLocked);
+    treasuryReason = data.lockReason || '';
+    if (data.type === 'SYNC_STATUS' && (restoredAlert || wasLocked === true)) {
+      restoredAlert = false;
+      if (!treasuryLocked) await clearCallAlert();
+    }
+  } else if (data.type === 'UNLOCK_SESSION') {
+    treasuryLocked = false;
+    treasuryReason = '';
+    await clearCallAlert();
+  } else return;
   broadcastStatus();
 }
 
-/**
- * Send message to tabs matching specific URL patterns
- */
-async function notifyTabs(message, urlPatterns) {
+const callChannel = new SocketChannel({
+  onState: state => { if (state !== 'connected') activeSessionId = null; broadcastStatus(); },
+  onMessage: handleCallMessage,
+});
+const treasuryChannel = new SocketChannel({ onState: broadcastStatus, onMessage: handleTreasuryMessage });
+
+function connectChannels() {
+  let treasuryUrl = config.wsUrl;
   try {
-    const queryPatterns = Array.isArray(urlPatterns) ? urlPatterns : [urlPatterns];
-    const tabs = await chrome.tabs.query({ url: queryPatterns });
-    for (const tab of tabs) {
-      if (tab.id) {
-        chrome.tabs.sendMessage(tab.id, message).catch((err) => {
-          // Tab may not have injected content script yet
-          console.debug(`[Echo BG] Failed to send message to tab ${tab.id}:`, err);
-        });
-      }
-    }
-  } catch (err) {
-    console.debug('[Echo BG] Query tabs notice:', err);
+    const url = new URL(config.wsUrl);
+    url.pathname = '/api/erp/ws/echo-extension';
+    url.search = '';
+    url.hash = '';
+    treasuryUrl = url.href;
+  } catch {
+    // SocketChannel reports invalid stored URLs as offline, leaving the popup
+    // usable so the operator can correct settings instead of failing startup.
   }
+  callChannel.configure(config.wsUrl, config.monitoringActive);
+  treasuryChannel.configure(treasuryUrl, config.monitoringActive);
 }
 
-/**
- * Broadcast status update to Extension Popup
- */
-function broadcastStatus() {
-  chrome.runtime.sendMessage({
-    type: 'ECHO_STATUS_UPDATE',
-    status: {
-      connectionStatus,
-      currentRiskScore,
-      activeSessionId,
-      lastAlert,
-      transcriptCount: transcriptHistory.length,
-    },
-  }).catch(() => {
-    // Popup might be closed
-  });
+async function initialize() {
+  const [stored, session] = await Promise.all([
+    chrome.storage.local.get(['echoConfig']), chrome.storage.session.get(['echoRuntime']),
+  ]);
+  config = { ...DEFAULT_CONFIG, ...stored.echoConfig };
+  if (session.echoRuntime) {
+    ({ currentRiskScore = 0, lastAlert = null, transcriptHistory = [] } = session.echoRuntime);
+    restoredAlert = Boolean(lastAlert);
+  }
+  await chrome.storage.local.set({ echoConfig: config });
+  if (!await chrome.alarms.get(RECONNECT_ALARM)) chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 1 });
+  connectChannels();
 }
 
-/**
- * Handle incoming requests from content scripts and extension popup
- */
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // 1. Google Meet content script sends newly recognized transcript turn
-  if (message.type === 'TRANSCRIPT_TURN') {
-    const { text, speaker } = message;
-    if (text && text.trim()) {
-      transcriptHistory.push({
-        text: text.trim(),
-        speaker: speaker || 'Meet Participant',
-        timestamp: Date.now(),
-      });
-      if (transcriptHistory.length > 30) transcriptHistory.shift();
+// Register listeners synchronously. Every worker activation starts initialization,
+// including a wake-up from a caption, popup request, or the reconnect alarm.
+const ready = initialize();
+ready.catch(() => console.warn('[Echo] Initialization failed'));
+chrome.runtime.onInstalled.addListener(() => ready.then(connectChannels).catch(() => {}));
+chrome.runtime.onStartup.addListener(() => ready.then(connectChannels).catch(() => {}));
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === RECONNECT_ALARM) ready.then(connectChannels).catch(() => {});
+});
 
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          type: 'transcript',
-          text: text.trim(),
-          speaker: speaker || 'Meet Participant',
-        }));
-      }
-    }
-    sendResponse({ success: true });
-    return true;
+async function handleRequest(message) {
+  await ready;
+  if (message.type === 'GET_STATUS') return status();
+  if (message.type === 'OPEN_TREASURY') {
+    const tabs = await chrome.tabs.query({ url: BANK_TABS });
+    if (tabs.length) await chrome.tabs.update(tabs[0].id, { active: true });
+    else await chrome.tabs.create({ url: 'http://localhost:3000/transfer' });
+    return { success: true };
   }
-
-  // 2. Dismiss Alert / False Positive Override
   if (message.type === 'DISMISS_ALERT') {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: 'dismiss_alert',
-        reason: message.reason || 'Operator verified as legitimate call',
-        operator_id: 'extension_operator',
-      }));
-    }
-    lastAlert = null;
-    currentRiskScore = 0.0;
-    chrome.storage.local.remove(['lastAlert']);
-    updateBadge('ON', '#10B981');
-
-    notifyTabs({ type: 'ECHO_ALERT_DISMISSED' }, 'https://meet.google.com/*');
-    notifyTabs({ type: 'ECHO_UNLOCK_TREASURY' }, ['http://localhost:3000/*', 'http://127.0.0.1:3000/*']);
-
-    sendResponse({ success: true });
-    return true;
+    const sent = callChannel.send({ type: 'dismiss_alert', reason: message.reason || 'Operator dismissed the call alert', operator_id: 'extension_operator' });
+    return { success: sent, error: sent ? undefined : 'Engine offline. Reconnect before dismissing the call alert.' };
   }
-
-  // 3. Demo Simulator: Inject Deepfake CEO Attack
-  if (message.type === 'SIMULATE_CEO_ATTACK') {
-    const attackText = message.text || "Hello Alex, this is CEO Robert Higgins. I am on an urgent confidential acquisition call right now. Standard procedures are waived by executive order. Wire $25.6M immediately to Offshore Strategic Holdings account 8829-1029. Do NOT call or verify with anyone else.";
-    
-    // Simulate incoming turn to Meet HUD as well
-    notifyTabs({
-      type: 'ECHO_MOCK_CAPTION',
-      text: attackText,
-      speaker: 'CEO Robert Higgins (VoIP)',
-    }, 'https://meet.google.com/*');
-
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: 'transcript',
-        text: attackText,
-        speaker: 'CEO Robert Higgins (Deepfake Impersonator)',
-      }));
-      sendResponse({ success: true, message: 'Attack simulated over WebSocket' });
-    } else {
-      sendResponse({ success: false, error: 'WebSocket not connected' });
-    }
-    return true;
-  }
-
-  // 4. Demo Simulator: Inject Normal Benign Call
-  if (message.type === 'SIMULATE_NORMAL_CALL') {
-    const normalText = message.text || "Hi team, let's review the Q3 product roadmap and sprint velocity metrics for the upcoming release.";
-    
-    notifyTabs({
-      type: 'ECHO_MOCK_CAPTION',
-      text: normalText,
-      speaker: 'Sarah Jenkins (Product)',
-    }, 'https://meet.google.com/*');
-
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: 'transcript',
-        text: normalText,
-        speaker: 'Sarah Jenkins (Product)',
-      }));
-      sendResponse({ success: true, message: 'Benign turn sent' });
-    } else {
-      sendResponse({ success: false, error: 'WebSocket not connected' });
-    }
-    return true;
-  }
-
-  // 5. Query current status for Popup
-  if (message.type === 'GET_STATUS') {
-    sendResponse({
-      connectionStatus,
-      currentRiskScore,
-      activeSessionId,
-      lastAlert,
-      transcriptCount: transcriptHistory.length,
-      history: transcriptHistory.slice(-5),
-    });
-    return true;
-  }
-
-  // 6. Update Configuration & Reconnect
   if (message.type === 'UPDATE_CONFIG') {
-    chrome.storage.local.set({ echoConfig: message.config }).then(() => {
-      if (socket) {
-        socket.close();
-      }
-      connectWebSocket();
-      sendResponse({ success: true });
-    });
-    return true;
+    const url = new URL(message.config.wsUrl);
+    if (!['ws:', 'wss:'].includes(url.protocol)) throw new Error('Use a ws:// or wss:// endpoint');
+    config = { ...config, ...message.config };
+    await chrome.storage.local.set({ echoConfig: config });
+    connectChannels();
+    return { success: true };
   }
-
-  // 7. Manual Reconnect Trigger
   if (message.type === 'RECONNECT') {
-    connectWebSocket();
-    sendResponse({ success: true });
-    return true;
+    connectChannels();
+    return { success: true };
   }
+  if (['TRANSCRIPT_TURN', 'SIMULATE_CEO_ATTACK', 'SIMULATE_NORMAL_CALL'].includes(message.type)) {
+    if (!config.monitoringActive) return { success: false, error: 'Monitoring is paused' };
+    const defaults = message.type === 'SIMULATE_CEO_ATTACK'
+      ? ['Wire $25.6M immediately to the offshore account. Skip CFO dual approval and keep it secret; I am the CEO.', 'CEO Robert Higgins (Demo)']
+      : ['Hi team, let us review the product roadmap for the upcoming release.', 'Meet Participant'];
+    const text = (message.text || (message.type === 'TRANSCRIPT_TURN' ? '' : defaults[0])).trim();
+    if (!text) return { success: false, error: 'Empty transcript' };
+    const speaker = message.speaker || defaults[1];
+    transcriptHistory.push({ text, speaker, timestamp: Date.now() });
+    transcriptHistory = transcriptHistory.slice(-30);
+    await persistState();
+    callChannel.send({ type: 'transcript', text, speaker }, true);
+    if (message.type !== 'TRANSCRIPT_TURN') await notifyTabs({ type: 'ECHO_MOCK_CAPTION', text, speaker }, CALL_TABS);
+    return { success: true };
+  }
+  return { success: false, error: 'Unknown request' };
+}
+
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  handleRequest(message).then(respond).catch(error => respond({ success: false, error: error.message }));
+  return true;
 });

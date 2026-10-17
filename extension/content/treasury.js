@@ -8,15 +8,21 @@
   console.log('[Echo Guard] Treasury Zero-Trust Interlock Active.');
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'ECHO_FREEZE_TREASURY') {
-      console.warn('[Echo Guard] Received Emergency Freeze signal from Google Meet call!', message);
-      showFreezeBanner(message.reason);
-      sendResponse({ acknowledged: true });
-    } else if (message.type === 'ECHO_UNLOCK_TREASURY') {
-      removeFreezeBanner();
+    if (message.type === 'ECHO_STATUS_UPDATE') {
+      applyStatus(message.status);
       sendResponse({ acknowledged: true });
     }
   });
+  chrome.runtime.sendMessage({ type: 'GET_STATUS' }).then(applyStatus).catch(() => {});
+
+  function applyStatus(status) {
+    if (status.treasuryBannerEnabled === false) { removeFreezeBanner(); return; }
+    // A disconnected call or dismissed alert cannot establish that the bank
+    // unlocked. Preserve the last banner until the ERP channel confirms release.
+    if (status.treasuryConnectionStatus !== 'connected') return;
+    if (status.treasuryLocked === true) showFreezeBanner(status.treasuryReason);
+    else if (status.treasuryLocked === false) removeFreezeBanner();
+  }
 
   function showFreezeBanner(reason) {
     if (document.getElementById('echo-treasury-banner')) return;
@@ -44,11 +50,7 @@
       animation: echo-banner-drop 0.3s ease-out;
     `;
 
-    banner.innerHTML = `
-      <span style="font-size: 16px;">🚨</span>
-      <span>ECHO ZERO-TRUST LOCK: ${reason || 'Coercion detected in Google Meet'}</span>
-      <span style="background: rgba(0,0,0,0.25); padding: 2px 8px; border-radius: 6px; font-size: 11px;">CAEP RFC 9493</span>
-    `;
+    banner.textContent = `ECHO ZERO-TRUST LOCK: ${reason || 'Coercion detected in a monitored call'} · CAEP RFC 9493 · Release after verification in Treasury`;
 
     document.body.appendChild(banner);
   }
