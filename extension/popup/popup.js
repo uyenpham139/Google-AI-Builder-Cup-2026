@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const btnSimAttack = document.getElementById('btn-sim-attack');
   const btnSimNormal = document.getElementById('btn-sim-normal');
-  const btnResetAlert = document.getElementById('btn-reset-alert');
+  const btnReviewTreasury = document.getElementById('btn-review-treasury');
 
   const toggleSettings = document.getElementById('toggle-settings');
   const settingsDrawer = document.getElementById('settings-drawer');
@@ -86,24 +86,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       threatLabel.textContent = 'CRITICAL FRAUD';
       threatLabel.style.color = '#ef4444';
       riskMeterFill.style.background = '#ef4444';
-      caepStatus.textContent = '🔒 TREASURY FROZEN (RFC 9493)';
-      caepStatus.style.color = '#f87171';
-      caepStatus.style.background = 'rgba(239, 68, 68, 0.2)';
     } else if (score >= 0.6) {
       threatLabel.textContent = 'SUSPICIOUS';
       threatLabel.style.color = '#f59e0b';
       riskMeterFill.style.background = '#f59e0b';
-      caepStatus.textContent = 'ELEVATED MONITORING';
-      caepStatus.style.color = '#fbbf24';
-      caepStatus.style.background = 'rgba(245, 158, 11, 0.2)';
     } else {
       threatLabel.textContent = 'SAFE';
       threatLabel.style.color = '#10b981';
       riskMeterFill.style.background = '#10b981';
-      caepStatus.textContent = 'CAEP RFC 9493 ARMED';
-      caepStatus.style.color = '#38bdf8';
-      caepStatus.style.background = 'rgba(56, 189, 248, 0.1)';
     }
+    // The bank's own channel is authoritative; call dismissal cannot unlock it.
+    const known = status.treasuryConnectionStatus === 'connected' && typeof status.treasuryLocked === 'boolean';
+    caepStatus.textContent = !known ? 'TREASURY STATUS UNAVAILABLE'
+      : status.treasuryLocked ? 'TREASURY FROZEN (RFC 9493)' : 'TREASURY NOT FROZEN';
+    caepStatus.style.color = !known ? '#fbbf24' : status.treasuryLocked ? '#f87171' : '#38bdf8';
+    caepStatus.style.background = !known ? 'rgba(245, 158, 11, 0.2)'
+      : status.treasuryLocked ? 'rgba(239, 68, 68, 0.2)' : 'rgba(56, 189, 248, 0.1)';
   }
 
   // Button actions
@@ -127,13 +125,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  btnResetAlert.addEventListener('click', () => {
-    chrome.runtime.sendMessage({
-      type: 'DISMISS_ALERT',
-      reason: 'Operator cleared alert from popup',
-    }, () => {
-      fetchStatus();
-    });
+  btnReviewTreasury.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'OPEN_TREASURY' });
   });
 
   toggleSettings.addEventListener('click', () => {
