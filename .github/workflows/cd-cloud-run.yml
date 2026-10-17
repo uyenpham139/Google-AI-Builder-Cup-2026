@@ -1,82 +1,250 @@
-name: Deploy to Cloud Run
+name: Continuous Deployment to Google Cloud Run
 
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-  REGION: asia-southeast1
-  GAR_LOCATION: asia-southeast1-docker.pkg.dev
-  GAR_REPOSITORY: echo-repo
-  FRONTEND_SERVICE: echo-frontend
-  BACKEND_SERVICE: echo-backend
-  WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
-  WIF_SERVICE_ACCOUNT: ${{ vars.WIF_SERVICE_ACCOUNT }}
+  REGION: ${{ vars.GCP_REGION || 'asia-southeast1' }}
+  GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY || 'echo-repo' }}
+  BACKEND_SERVICE: ${{ vars.BACKEND_SERVICE || 'echo-backend' }}
+  FRONTEND_SERVICE: ${{ vars.FRONTEND_SERVICE || 'echo-frontend' }}
+  CALL_SERVICE: ${{ vars.CALL_SERVICE || 'echo-call' }}
 
 jobs:
+  # ========================================================
+  # JOB 1: BUILD & DEPLOY BACKEND (FastAPI + Multi-Agent Engine)
+  # ========================================================
   deploy-backend:
+    name: Deploy Backend Service
     runs-on: ubuntu-latest
     permissions:
       contents: 'read'
       id-token: 'write'
+    outputs:
+      backend_url: ${{ steps.deploy-backend.outputs.url }}
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Google Auth
-        id: auth
+      # Support either Service Account Key JSON OR Workload Identity Federation (WIF)
+      - name: Google Cloud Auth (Service Account Key)
+        if: ${{ secrets.GCP_SA_KEY != '' }}
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: '${{ env.WIF_PROVIDER }}'
-          service_account: '${{ env.WIF_SERVICE_ACCOUNT }}'
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Docker Auth
+      - name: Google Cloud Auth (Workload Identity Federation)
+        if: ${{ secrets.GCP_SA_KEY == '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
         run: |-
-          gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev"
+          gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
 
-      - name: Build and Push Backend Container
+      - name: Build & Push Backend Container Image
+        env:
+          IMAGE_TAG: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.BACKEND_SERVICE }}
         run: |-
-          docker build -t "${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.BACKEND_SERVICE }}:${{ github.sha }}" ./backend
-          docker push "${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.BACKEND_SERVICE }}:${{ github.sha }}"
+          docker build \
+            -t "${IMAGE_TAG}:${{ github.sha }}" \
+            -t "${IMAGE_TAG}:latest" \
+            ./backend
+          docker push "${IMAGE_TAG}:${{ github.sha }}"
+          docker push "${IMAGE_TAG}:latest"
 
-      - name: Deploy Backend to Cloud Run
+      - name: Deploy Backend to Google Cloud Run
+        id: deploy-backend
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.BACKEND_SERVICE }}
           region: ${{ env.REGION }}
-          image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.BACKEND_SERVICE }}:${{ github.sha }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.BACKEND_SERVICE }}:${{ github.sha }}
+          flags: |
+            --allow-unauthenticated
+            --session-affinity
+            --timeout=3600
+            --port=8000
+            --cpu=1
+            --memory=1Gi
+          env_vars: |
+            ENVIRONMENT=production
+            GEMINI_MODEL=${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
+            GEMINI_LIVE_MODEL=${{ vars.GEMINI_LIVE_MODEL || 'gemini-3.8-live' }}
+            GEMINI_LIVE_VOICE=${{ vars.GEMINI_LIVE_VOICE || 'Puck' }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}
 
+  # ========================================================
+  # JOB 2: BUILD & DEPLOY FRONTEND (Treasury Banking Portal)
+  # ========================================================
   deploy-frontend:
+    name: Deploy Frontend Service
+    needs: deploy-backend
     runs-on: ubuntu-latest
     permissions:
       contents: 'read'
       id-token: 'write'
+    outputs:
+      frontend_url: ${{ steps.deploy-frontend.outputs.url }}
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Google Auth
-        id: auth
+      - name: Google Cloud Auth (Service Account Key)
+        if: ${{ secrets.GCP_SA_KEY != '' }}
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: '${{ env.WIF_PROVIDER }}'
-          service_account: '${{ env.WIF_SERVICE_ACCOUNT }}'
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Docker Auth
+      - name: Google Cloud Auth (Workload Identity Federation)
+        if: ${{ secrets.GCP_SA_KEY == '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
         run: |-
-          gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev"
+          gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
 
-      - name: Build and Push Frontend Container
+      - name: Build & Push Frontend Container Image
+        env:
+          IMAGE_TAG: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.FRONTEND_SERVICE }}
         run: |-
-          docker build -t "${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.FRONTEND_SERVICE }}:${{ github.sha }}" ./frontend
-          docker push "${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.FRONTEND_SERVICE }}:${{ github.sha }}"
+          BACKEND_URL="${{ vars.CUSTOM_BACKEND_URL || needs.deploy-backend.outputs.backend_url }}"
+          WS_URL=$(echo "$BACKEND_URL" | sed 's/^https:/wss:/' | sed 's/^http:/ws:/')
+          echo "Connecting frontend to Backend: $BACKEND_URL and WS: $WS_URL"
 
-      - name: Deploy Frontend to Cloud Run
+          docker build \
+            -f frontend/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_URL="$BACKEND_URL" \
+            --build-arg NEXT_PUBLIC_WS_URL="$WS_URL" \
+            -t "${IMAGE_TAG}:${{ github.sha }}" \
+            -t "${IMAGE_TAG}:latest" \
+            .
+
+          docker push "${IMAGE_TAG}:${{ github.sha }}"
+          docker push "${IMAGE_TAG}:latest"
+
+      - name: Deploy Frontend to Google Cloud Run
+        id: deploy-frontend
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.FRONTEND_SERVICE }}
           region: ${{ env.REGION }}
-          image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.FRONTEND_SERVICE }}:${{ github.sha }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.FRONTEND_SERVICE }}:${{ github.sha }}
+          flags: |
+            --allow-unauthenticated
+            --port=3000
+            --cpu=1
+            --memory=1Gi
+          env_vars: |
+            NODE_ENV=production
+            PORT=3000
+
+  # ========================================================
+  # JOB 3: BUILD & DEPLOY CALL APP (Conference Call Client)
+  # ========================================================
+  deploy-call:
+    name: Deploy Call Simulation Service
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    outputs:
+      call_url: ${{ steps.deploy-call.outputs.url }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Google Cloud Auth (Service Account Key)
+        if: ${{ secrets.GCP_SA_KEY != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Google Cloud Auth (Workload Identity Federation)
+        if: ${{ secrets.GCP_SA_KEY == '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: |-
+          gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build & Push Call Container Image
+        env:
+          IMAGE_TAG: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.CALL_SERVICE }}
+        run: |-
+          BACKEND_URL="${{ vars.CUSTOM_BACKEND_URL || needs.deploy-backend.outputs.backend_url }}"
+          WS_URL=$(echo "$BACKEND_URL" | sed 's/^https:/wss:/' | sed 's/^http:/ws:/')
+          echo "Connecting Call app to Backend: $BACKEND_URL and WS: $WS_URL"
+
+          docker build \
+            -f call/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_URL="$BACKEND_URL" \
+            --build-arg NEXT_PUBLIC_WS_URL="$WS_URL" \
+            --build-arg NEXT_PUBLIC_ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}" \
+            -t "${IMAGE_TAG}:${{ github.sha }}" \
+            -t "${IMAGE_TAG}:latest" \
+            .
+
+          docker push "${IMAGE_TAG}:${{ github.sha }}"
+          docker push "${IMAGE_TAG}:latest"
+
+      - name: Deploy Call Service to Google Cloud Run
+        id: deploy-call
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.CALL_SERVICE }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.CALL_SERVICE }}:${{ github.sha }}
+          flags: |
+            --allow-unauthenticated
+            --port=3001
+            --cpu=1
+            --memory=1Gi
+          env_vars: |
+            NODE_ENV=production
+            PORT=3001
+
+  # ========================================================
+  # JOB 4: SUMMARY DASHBOARD
+  # ========================================================
+  deployment-summary:
+    name: Deployment Summary
+    needs: [deploy-backend, deploy-frontend, deploy-call]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish Deployment Summary
+        run: |
+          echo "## 🚀 Deployment Successfully Completed to Google Cloud Run!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Cloud Run Public URL | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Backend API** | [${{ needs.deploy-backend.outputs.backend_url }}](${{ needs.deploy-backend.outputs.backend_url }}) | FastAPI Multi-Agent Supervisor & WebSocket Gateway |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Banking Portal (Frontend)** | [${{ needs.deploy-frontend.outputs.frontend_url }}](${{ needs.deploy-frontend.outputs.frontend_url }}) | Next.js Corporate Banking Interface |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Conference Call (Call)** | [${{ needs.deploy-call.outputs.call_url }}](${{ needs.deploy-call.outputs.call_url }}) | Next.js Call Simulator & 3-Tier Speech Warning Engine |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✨ **Git Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY

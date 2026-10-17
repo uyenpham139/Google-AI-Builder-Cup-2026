@@ -3,8 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "dev": "pnpm --parallel --filter frontend --filter call dev",
     "dev:frontend": "pnpm --filter frontend dev",
     "build:frontend": "pnpm --filter frontend build",
+    "dev:call": "pnpm --filter call dev",
+    "build:call": "pnpm --filter call build",
     "prepare": "husky"
   },
   "packageManager": "pnpm@10.33.2",
