@@ -60,12 +60,13 @@ interface Recognition {
   stop: () => void;
 }
 
-const GUARD_UI: Record<Guard, { label: string; cls: string; dot: string; Icon: typeof Shield }> = {
+const GUARD_UI: Record<Guard | 'local', { label: string; cls: string; dot: string; Icon: typeof Shield }> = {
   safe: { label: 'Secure', cls: 'bg-emerald-950/80 border-emerald-500/30 text-emerald-400', dot: 'bg-emerald-400', Icon: ShieldCheck },
   analyzing: { label: 'Analyzing', cls: 'bg-slate-800/80 border-slate-600/30 text-slate-300', dot: 'bg-blue-400 animate-pulse', Icon: Shield },
   suspicious: { label: 'Suspicious', cls: 'bg-amber-950/80 border-amber-500/30 text-amber-300', dot: 'bg-amber-400 animate-ping', Icon: ShieldAlert },
   alert: { label: 'Fraud Detected', cls: 'bg-red-950/80 border-red-500/40 text-red-300', dot: 'bg-red-500 animate-ping', Icon: ShieldAlert },
   disabled: { label: 'Disabled', cls: 'bg-slate-900/80 border-white/10 text-slate-400', dot: 'bg-slate-500', Icon: Shield },
+  local: { label: 'Local protection', cls: 'bg-amber-950/80 border-amber-500/30 text-amber-300', dot: 'bg-amber-400', Icon: Shield },
 };
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -266,6 +267,8 @@ export default function CallPage() {
   const [connected, setConnected] = useState(false);
   const [peerCount, setPeerCount] = useState(1);
   const [guard, setGuard] = useState<Guard>('safe');
+  const [analysisSource, setAnalysisSource] = useState<'gemini' | 'local_rules' | null>(null);
+  const [replySource, setReplySource] = useState<'gemini' | 'scripted' | 'unavailable' | null>(null);
   const [captions, setCaptions] = useState<Caption[]>([]);
   const [speaking, setSpeaking] = useState(false);
   const [aiThinking, setAiThinking] = useState(false);
@@ -522,6 +525,11 @@ export default function CallPage() {
           return;
         }
 
+        if ((d.type === 'RISK_UPDATE' || d.type === 'SECURITY_ALERT') &&
+            (d.source === 'gemini' || d.source === 'local_rules')) {
+          setAnalysisSource(d.source);
+        }
+
         if (bargedRef.current && d.type !== 'ALERT_DISMISSED') return;
 
         switch (d.type) {
@@ -705,6 +713,7 @@ export default function CallPage() {
         if (!res.ok) throw new Error('Roleplay API error');
         const data = await res.json();
         const replyText = data.reply;
+        setReplySource(data.source === 'gemini' ? 'gemini' : 'scripted');
 
         const updated = [
           ...conversationHistoryRef.current,
@@ -723,6 +732,7 @@ export default function CallPage() {
         setSpeaking(false);
       } catch (err) {
         console.error('AI Roleplay reply failed:', err);
+        setReplySource('unavailable');
         setAiThinking(false);
         setSpeaking(false);
       }
@@ -993,7 +1003,9 @@ export default function CallPage() {
     );
   }
 
-  const g = isEchoActive ? GUARD_UI[guard] : GUARD_UI['disabled'];
+  const g = isEchoActive
+    ? GUARD_UI[guard === 'safe' && analysisSource === 'local_rules' ? 'local' : guard]
+    : GUARD_UI['disabled'];
 
   return (
     <div className="h-full flex flex-col bg-[#202124] text-[#e8eaed] relative overflow-hidden select-none font-sans">
@@ -1114,7 +1126,7 @@ export default function CallPage() {
             </div>
 
             {/* Top-Right: Minimalist Echo Guard Status Badge */}
-            <div className="absolute right-4 top-4 z-20">
+            <div className="absolute right-4 top-4 z-20 flex flex-col items-end gap-2 max-w-[min(320px,75%)]">
               <button
                 onClick={() => {
                   setPluginMenuOpen(true);
@@ -1127,6 +1139,21 @@ export default function CallPage() {
                 <span>Echo Guard: {connected ? g.label : 'Offline'}</span>
                 <span className={`h-2 w-2 rounded-full ${g.dot}`} />
               </button>
+              {connected && isEchoActive && analysisSource === 'local_rules' && (
+                <p role="status" className="rounded-lg bg-black/75 px-3 py-2 text-[11px] text-amber-200 text-right">
+                  AI analysis unavailable — local protection active.
+                </p>
+              )}
+              {callMode === 'ai' && replySource === 'scripted' && (
+                <p role="status" className="rounded-lg bg-black/75 px-3 py-2 text-[11px] text-amber-200 text-right">
+                  AI replies unavailable — using scripted demo replies.
+                </p>
+              )}
+              {callMode === 'ai' && replySource === 'unavailable' && (
+                <p role="status" className="rounded-lg bg-black/75 px-3 py-2 text-[11px] text-amber-200 text-right">
+                  Reply service unavailable. Try again shortly.
+                </p>
+              )}
             </div>
 
             {/* Bottom-Right Self-View PiP */}
@@ -1577,7 +1604,7 @@ export default function CallPage() {
                     Solo with AI
                   </div>
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    Live simulation with Gemini 3.5 executing an executive wire fraud attempt.
+                    Live AI simulation of an executive wire fraud attempt.
                   </p>
                 </div>
                 <div className="mt-4 pt-2.5 border-t border-white/5 text-xs font-medium text-purple-300">

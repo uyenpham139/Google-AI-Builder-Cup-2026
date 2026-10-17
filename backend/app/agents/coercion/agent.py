@@ -1,10 +1,7 @@
-import json
-import os
-import time
-from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from app.agents.coercion.keyword_guard import CoercionKeywordGuard
+from app.services.gemini import get_gemini_gateway, timeout_seconds
 
 class CoercionEntities(BaseModel):
     requested_amount: str | None = Field(default=None, description="The requested transfer amount, including currency. E.g., '25 million dollars', '5 billion'")
@@ -18,9 +15,8 @@ class CoercionEvaluation(BaseModel):
     matched_tactics: list[str] = Field(description="List of risk flags (e.g., URGENCY_PRESSURE, FORCED_SECRECY, BYPASS_FOUR_EYES, AUTHORITY_INTIMIDATION)")
 
 class CoercionIntentAgent:
-    def __init__(self):
-        # Initialize Gemini client directly
-        self.gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    def __init__(self, gateway=None):
+        self.gateway = gateway if gateway is not None else get_gemini_gateway()
         # Initialize Tier-1 Fast Local Keyword Guard (< 1ms)
         self.keyword_guard = CoercionKeywordGuard()
         
@@ -50,50 +46,35 @@ class CoercionIntentAgent:
                 "signals": guard_result.get("detected_signals", [])
             }
 
-        import asyncio
         from app.prompts.coercion_prompt import COERCION_INTENT_PROMPT
         prompt = COERCION_INTENT_PROMPT.format(text_segment=text_segment)
-        primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
-        models_to_try = [primary_model, "gemini-3.5-flash"]
-        
-        response = None
-        last_error = None
-        
-        for m in models_to_try:
+        response = await self.gateway.generate(
+            prompt,
+            timeout=timeout_seconds("GEMINI_ANALYSIS_TIMEOUT_SECONDS", 20.0),
+            purpose="analysis",
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CoercionEvaluation,
+                temperature=0.1,
+            ),
+        )
+        fallback_reason = response.error
+        if response.text:
             try:
-                # 2.5s timeout prevents SDK from endlessly retrying on 503 UNAVAILABLE
-                response = await asyncio.wait_for(
-                    self.gemini_client.aio.models.generate_content(
-                        model=m,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            response_schema=CoercionEvaluation,
-                            temperature=0.1
-                        ),
-                    ),
-                    timeout=2.5
-                )
-                if response and response.text:
-                    break
-            except Exception as ex:
-                last_error = ex
-                continue
-
-        if response and response.text:
-            try:
-                result = json.loads(response.text)
+                result = CoercionEvaluation.model_validate_json(response.text)
                 return {
-                    "coercion_score": round(result.get("coercion_score", 0.0), 2),
-                    "matched_tactics": result.get("matched_tactics", []),
-                    "entities": result.get("entities", {}),
+                    "coercion_score": round(max(0.0, min(result.coercion_score, 1.0)), 2),
+                    "matched_tactics": result.matched_tactics,
+                    "entities": result.entities.model_dump(),
                     "raw_text": text_segment,
                     "tier_executed": "TIER_2_GEMINI",
                     "llm_skipped": False,
-                    "signals": guard_result.get("detected_signals", [])
+                    "signals": guard_result.get("detected_signals", []),
+                    "source": "gemini",
+                    "model": response.model,
                 }
-            except Exception as parse_err:
-                last_error = parse_err
+            except ValueError:
+                fallback_reason = "invalid_response"
 
         # Fallback to Tier-1 heuristic if Gemini Cloud experiences 503 or latency spikes
         fallback_score = guard_result.get("tier1_risk_score", 0.85)
@@ -106,5 +87,8 @@ class CoercionIntentAgent:
             "raw_text": text_segment,
             "tier_executed": "TIER_1_FALLBACK",
             "llm_skipped": False,
-            "error": str(last_error) if last_error else "Timeout"
+            "source": "local_rules",
+            "model": None,
+            "fallback_reason": fallback_reason,
+            "error": fallback_reason,
         }

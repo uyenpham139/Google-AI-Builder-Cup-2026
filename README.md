@@ -1,7 +1,10 @@
 # Echo: Zero-Trust Defense Against Executive Impersonation & Coercive Wire Fraud
 
+**We use `Staging` now.** This integration branch starts from `feat/ECHO-33`;
+target feature pull requests at `Staging`.
+
 [![Google AI Builder Cup 2026](https://img.shields.io/badge/Google_AI_Builder_Cup-2026-blue.svg)](https://ai.google.dev/)
-[![Gemini 3.5 Flash](https://img.shields.io/badge/AI_Engine-Gemini_3.5_Flash_Lite-orange.svg)](https://ai.google.dev/)
+[![Gemini 3.8 Live](https://img.shields.io/badge/AI_Engine-Gemini_3.8_Live-orange.svg)](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live)
 [![ElevenLabs TTS](https://img.shields.io/badge/Voice_Synthesis-ElevenLabs_Turbo_v2.5-black.svg)](https://elevenlabs.io/)
 [![Zero--Trust](https://img.shields.io/badge/Enforcement-CAEP_RFC_9493-emerald.svg)](https://openid.net/wg/risc/)
 
@@ -65,11 +68,18 @@ Open `backend/.env` (or copy from `backend/.env.example`) and verify your keys:
 ```env
 # Gemini API Key
 GEMINI_API_KEY=your_gemini_api_key
+GEMINI_API_MODE=live
+GEMINI_LIVE_MODEL=gemini-3.8-live
+# Used by standard mode and the separate DoA agent:
 GEMINI_MODEL=gemini-3.5-flash-lite
 
 # ElevenLabs API Key (Optional, for realistic voice synthesis)
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
 ```
+
+Call analysis and AI replies use the Live API in this configuration. Set
+`GEMINI_API_MODE=standard` to use the existing Flash model routing instead.
+See [Gemini availability](docs/gemini-resilience.md) for transport details and quotas.
 
 #### B. Call App Environment
 Create or verify `call/.env.local`:
@@ -235,6 +245,7 @@ To prevent operational disruption, Echo implements 3-way contextual cross-valida
 
 ## 📄 Documentation & Architecture
 For in-depth architectural details, refer to:
+- [`docs/gemini-resilience.md`](docs/gemini-resilience.md): Gemini failover, time budgets, and fallback status during outages.
 - [`docs/system_architecture.md`](docs/system_architecture.md): HFT Streaming Architecture, Latency SLAs, and Multi-Agent Orchestration.
 
 ---
