@@ -155,7 +155,6 @@ jobs:
             --memory=1Gi
           env_vars: |
             NODE_ENV=production
-            PORT=3000
 
   # ========================================================
   # JOB 3: BUILD & DEPLOY CALL APP (Conference Call Client)
@@ -228,7 +227,6 @@ jobs:
             --memory=1Gi
           env_vars: |
             NODE_ENV=production
-            PORT=3001
 
   # ========================================================
   # JOB 4: SUMMARY DASHBOARD
